@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+mujoco_menagerie/
+models/*.zip
+models/*.pkl
+logs/
+assets/*.mp4
+assets/*.gif
+.DS_Store
