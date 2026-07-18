@@ -1,4 +1,4 @@
-"""Record demo videos of the trained policy."""
+"""Record demo videos and GIFs of the trained policy."""
 
 import argparse
 import os
@@ -15,20 +15,17 @@ from envs.go2_env import Go2Env
 
 def main():
     parser = argparse.ArgumentParser(description="Record Go2 policy video")
-    parser.add_argument(
-        "--model", type=str, default="models/go2_ppo_final.zip",
-    )
-    parser.add_argument(
-        "--vec-normalize", type=str, default="models/vec_normalize.pkl",
-    )
-    parser.add_argument("--output", type=str, default="assets/demo.mp4")
+    parser.add_argument("--model", type=str, default="models/go2_ppo_final.zip")
+    parser.add_argument("--vec-normalize", type=str, default="models/vecnormalize_final.pkl")
+    parser.add_argument("--output", type=str, default="assets/go2_walking.mp4")
+    parser.add_argument("--gif", type=str, default="assets/go2_walking.gif")
     parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--cmd-vel", type=float, nargs=3, default=[0.8, 0.0, 0.0])
     args = parser.parse_args()
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
 
-    # Create env in rgb_array mode for recording
-    raw_env = Go2Env(render_mode="rgb_array")
+    raw_env = Go2Env(render_mode="rgb_array", cmd_vel=tuple(args.cmd_vel))
     env = DummyVecEnv([lambda: raw_env])
     if os.path.exists(args.vec_normalize):
         env = VecNormalize.load(args.vec_normalize, env)
@@ -39,7 +36,7 @@ def main():
 
     frames = []
     obs = env.reset()
-    for _ in range(args.steps):
+    for step in range(args.steps):
         action, _ = model.predict(obs, deterministic=True)
         obs, _, done, _ = env.step(action)
         frame = raw_env.render()
@@ -48,8 +45,18 @@ def main():
         if done[0]:
             obs = env.reset()
 
-    imageio.mimsave(args.output, frames, fps=25)
-    print(f"Video saved to {args.output} ({len(frames)} frames)")
+    if frames:
+        # Save MP4
+        imageio.mimsave(args.output, frames, fps=25)
+        print(f"Video saved: {args.output} ({len(frames)} frames)")
+
+        # Save GIF (every 2nd frame to reduce size)
+        if args.gif:
+            imageio.mimsave(args.gif, frames[::2], fps=12, loop=0)
+            print(f"GIF saved:   {args.gif}")
+    else:
+        print("No frames captured!")
+
     env.close()
 
 

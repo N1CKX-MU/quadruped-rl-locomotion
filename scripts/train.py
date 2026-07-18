@@ -1,34 +1,41 @@
-"""Training entry point for Go2 quadruped locomotion."""
+"""Training entry point for Go2 quadruped locomotion with PPO."""
 
 import argparse
 import os
 import sys
+
 import yaml
-
-import gymnasium as gym
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.callbacks import (
+    CallbackList,
+    CheckpointCallback,
+    EvalCallback,
+)
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 
-# Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from envs.go2_env import Go2Env
+from callbacks.curriculum import CurriculumCallback
 
 
-def make_env(config):
-    """Create a Go2 environment from config."""
-    env_cfg = config["environment"]
+def make_env(env_cfg, rank, seed=0):
+    """Factory function for creating a monitored Go2 environment."""
     def _init():
-        return Go2Env(
+        env = Go2Env(
             xml_path=env_cfg["xml_path"],
             frame_skip=env_cfg["frame_skip"],
-            forward_reward_weight=env_cfg["forward_reward_weight"],
-            ctrl_cost_weight=env_cfg["ctrl_cost_weight"],
-            healthy_reward=env_cfg["healthy_reward"],
+            cmd_vel=tuple(env_cfg["cmd_vel"]),
+            action_scale=env_cfg["action_scale"],
             healthy_z_range=tuple(env_cfg["healthy_z_range"]),
+            max_pitch_roll=env_cfg["max_pitch_roll"],
             reset_noise_scale=env_cfg["reset_noise_scale"],
             max_episode_steps=env_cfg["max_episode_steps"],
+            randomize_dynamics=env_cfg.get("randomize_dynamics", False),
         )
+        env = Monitor(env)
+        env.reset(seed=seed + rank)
+        return env
     return _init
 
 
@@ -36,50 +43,67 @@ def main():
     parser = argparse.ArgumentParser(description="Train Go2 quadruped with PPO")
     parser.add_argument(
         "--config", type=str, default="configs/training_config.yaml",
-        help="Path to training config YAML"
     )
-    parser.add_argument(
-        "--resume", type=str, default=None,
-        help="Path to checkpoint to resume training from"
-    )
+    parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
+    env_cfg = config["environment"]
     train_cfg = config["training"]
     log_cfg = config["logging"]
+    curriculum_cfg = config.get("curriculum", {})
 
-    # Create directories
     os.makedirs(log_cfg["model_dir"], exist_ok=True)
     os.makedirs(log_cfg["tensorboard_log"], exist_ok=True)
+    os.makedirs(os.path.join(log_cfg["model_dir"], "checkpoints"), exist_ok=True)
+    os.makedirs(os.path.join(log_cfg["model_dir"], "best"), exist_ok=True)
 
-    # Create vectorized environment with observation normalization
-    env = DummyVecEnv([make_env(config)])
+    n_envs = train_cfg.get("n_envs", 8)
+
+    # Parallel training environments
+    env = SubprocVecEnv([make_env(env_cfg, i) for i in range(n_envs)])
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    # Eval environment
-    eval_env = DummyVecEnv([make_env(config)])
+    # Single eval environment
+    eval_env = DummyVecEnv([make_env(env_cfg, 100)])
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
 
     # Callbacks
     checkpoint_cb = CheckpointCallback(
-        save_freq=log_cfg["save_freq"],
-        save_path=log_cfg["model_dir"],
+        save_freq=max(log_cfg["save_freq"] // n_envs, 1),
+        save_path=os.path.join(log_cfg["model_dir"], "checkpoints"),
         name_prefix="go2_ppo",
+        save_vecnormalize=True,
     )
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=os.path.join(log_cfg["model_dir"], "best"),
-        log_path=log_cfg["log_dir"],
-        eval_freq=log_cfg["eval_freq"],
+        log_path=os.path.join(log_cfg["log_dir"], "eval"),
+        eval_freq=max(log_cfg["eval_freq"] // n_envs, 1),
         n_eval_episodes=log_cfg["n_eval_episodes"],
         deterministic=True,
     )
 
-    # Create or load model
+    callbacks = [checkpoint_cb, eval_cb]
+
+    if curriculum_cfg.get("enabled", False):
+        curriculum_cb = CurriculumCallback(
+            max_vel=curriculum_cfg.get("max_vel", 1.2),
+            start_vel=curriculum_cfg.get("start_vel", 0.3),
+            warmup_steps=curriculum_cfg.get("warmup_steps", 500_000),
+        )
+        callbacks.append(curriculum_cb)
+
+    # Build PPO model
+    policy_kwargs = train_cfg.get("policy_kwargs", {})
+    if "net_arch" in policy_kwargs and isinstance(policy_kwargs["net_arch"], list):
+        arch = policy_kwargs["net_arch"]
+        policy_kwargs["net_arch"] = dict(pi=arch, vf=arch)
+
     if args.resume:
-        print(f"Resuming training from {args.resume}")
+        print(f"Resuming from {args.resume}")
         model = PPO.load(args.resume, env=env)
     else:
         model = PPO(
@@ -95,21 +119,22 @@ def main():
             ent_coef=train_cfg["ent_coef"],
             vf_coef=train_cfg["vf_coef"],
             max_grad_norm=train_cfg["max_grad_norm"],
-            policy_kwargs=train_cfg["policy_kwargs"],
+            policy_kwargs=policy_kwargs,
             tensorboard_log=log_cfg["tensorboard_log"],
             verbose=1,
+            device="auto",
         )
 
-    print(f"Training for {train_cfg['total_timesteps']} timesteps...")
+    print(f"Training PPO for {train_cfg['total_timesteps']} timesteps with {n_envs} envs...")
     model.learn(
         total_timesteps=train_cfg["total_timesteps"],
-        callback=[checkpoint_cb, eval_cb],
+        callback=CallbackList(callbacks),
+        tb_log_name="go2_ppo",
         progress_bar=True,
     )
 
-    # Save final model and normalization stats
     model.save(os.path.join(log_cfg["model_dir"], "go2_ppo_final"))
-    env.save(os.path.join(log_cfg["model_dir"], "vec_normalize.pkl"))
+    env.save(os.path.join(log_cfg["model_dir"], "vecnormalize_final.pkl"))
     print("Training complete. Model saved.")
 
 
