@@ -2,17 +2,19 @@
 
 environment:
   xml_path: "mujoco_menagerie/unitree_go2/scene.xml"
-  forward_reward_weight: 1.0
-  ctrl_cost_weight: 0.05
-  healthy_reward: 1.0
+  frame_skip: 20              # dt = 20 * 0.002 = 0.04s -> 25 Hz control
+  cmd_vel: [0.5, 0.0, 0.0]   # Target velocity [vx, vy, yaw_rate]
+  action_scale: 0.3           # Max joint position offset (rad) from default pose
   healthy_z_range: [0.15, 0.6]
-  reset_noise_scale: 0.1
-  frame_skip: 20            # dt = 20 * 0.002 = 0.04s -> 25 Hz control
-  max_episode_steps: 1000   # 40 seconds per episode
+  max_pitch_roll: 1.0         # Max pitch/roll before termination (rad)
+  reset_noise_scale: 0.05
+  max_episode_steps: 1000     # 1000 * 0.04s = 40 seconds per episode
+  randomize_dynamics: false
 
 training:
   algorithm: "PPO"
-  total_timesteps: 1_000_000
+  total_timesteps: 2_000_000
+  n_envs: 8                   # Parallel environments
   learning_rate: 3.0e-4
   n_steps: 2048
   batch_size: 64
@@ -27,10 +29,16 @@ training:
   policy_kwargs:
     net_arch: [256, 256]
 
+curriculum:
+  enabled: true
+  start_vel: 0.3              # Starting target velocity (m/s)
+  max_vel: 1.2                # Final target velocity (m/s)
+  warmup_steps: 500_000       # Steps to reach max velocity
+
 logging:
   log_dir: "logs/"
   model_dir: "models/"
-  save_freq: 50000          # Save checkpoint every 50k steps
-  eval_freq: 10000          # Evaluate every 10k steps
-  n_eval_episodes: 5
+  save_freq: 50000
+  eval_freq: 25000
+  n_eval_episodes: 10
   tensorboard_log: "logs/tensorboard/"
