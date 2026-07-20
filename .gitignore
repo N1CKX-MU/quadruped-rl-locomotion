@@ -5,7 +5,9 @@ __pycache__/
 mujoco_menagerie/
 models/*.zip
 models/*.pkl
-logs/
+logs/tensorboard/
+logs/eval/
+!logs/*.md
 assets/*.mp4
 assets/*.gif
 .DS_Store
