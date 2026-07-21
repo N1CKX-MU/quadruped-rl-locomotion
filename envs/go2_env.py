@@ -49,7 +49,7 @@ class Go2Env(gym.Env):
         xml_path="mujoco_menagerie/unitree_go2/scene.xml",
         frame_skip=20,
         cmd_vel=(0.5, 0.0, 0.0),
-        action_scale=0.3,
+        action_scale=0.5,
         healthy_z_range=(0.15, 0.6),
         max_pitch_roll=1.0,
         reset_noise_scale=0.05,
@@ -154,14 +154,14 @@ class Go2Env(gym.Env):
 
         # 1. Linear velocity tracking (dominant positive signal)
         lin_vel_error = (self.cmd_vel[0] - base_lin_vel[0]) ** 2
-        r_lin_vel = math.exp(-lin_vel_error / 0.25) * 1.0
+        r_lin_vel = math.exp(-lin_vel_error / 0.5) * 2.0
 
         # 2. Angular velocity tracking (yaw)
         ang_vel_error = (self.cmd_vel[2] - base_ang_vel[2]) ** 2
         r_ang_vel = math.exp(-ang_vel_error / 0.25) * 0.5
 
-        # 3. Alive bonus
-        r_alive = 0.5
+        # 3. Alive bonus (kept small so velocity tracking dominates)
+        r_alive = 0.2
 
         # 4. Lateral velocity penalty (don't crab-walk)
         r_lateral = -abs(base_lin_vel[1]) * 0.5

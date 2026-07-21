@@ -4,7 +4,7 @@ environment:
   xml_path: "mujoco_menagerie/unitree_go2/scene.xml"
   frame_skip: 20              # dt = 20 * 0.002 = 0.04s -> 25 Hz control
   cmd_vel: [0.5, 0.0, 0.0]   # Target velocity [vx, vy, yaw_rate]
-  action_scale: 0.3           # Max joint position offset (rad) from default pose
+  action_scale: 0.5           # Max joint position offset (rad) from default pose
   healthy_z_range: [0.15, 0.6]
   max_pitch_roll: 1.0         # Max pitch/roll before termination (rad)
   reset_noise_scale: 0.05
