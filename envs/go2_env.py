@@ -90,6 +90,10 @@ class Go2Env(gym.Env):
         if len(self.foot_geom_ids) != 4:
             self.foot_geom_ids = list(range(self.model.ngeom - 4, self.model.ngeom))
 
+        # PD controller gains (applied on top of torque actuators)
+        self.kp = 40.0   # Position gain (Nm/rad)
+        self.kd = 1.0    # Damping gain (Nm·s/rad)
+
         # Store default dynamics for domain randomization
         self.default_friction = self.model.geom_friction.copy()
         self.default_mass = self.model.body_mass.copy()
@@ -152,17 +156,16 @@ class Go2Env(gym.Env):
         base_lin_vel = self.data.qvel[0:3]
         base_ang_vel = self.data.qvel[3:6]
 
-        # 1. Linear velocity tracking (dominant positive signal)
-        # Direct reward for forward velocity, clipped to target
-        forward_vel = min(base_lin_vel[0], self.cmd_vel[0])
-        r_lin_vel = max(0.0, forward_vel) * 3.0
+        # 1. Linear velocity tracking
+        lin_vel_error = (self.cmd_vel[0] - base_lin_vel[0]) ** 2
+        r_lin_vel = math.exp(-lin_vel_error / 0.25) * 2.0
 
         # 2. Angular velocity tracking (yaw)
         ang_vel_error = (self.cmd_vel[2] - base_ang_vel[2]) ** 2
         r_ang_vel = math.exp(-ang_vel_error / 0.25) * 0.5
 
-        # 3. Alive bonus (small — must not dominate velocity)
-        r_alive = 0.1
+        # 3. Alive bonus
+        r_alive = 0.5
 
         # 4. Lateral velocity penalty (don't crab-walk)
         r_lateral = -abs(base_lin_vel[1]) * 0.5
@@ -297,9 +300,14 @@ class Go2Env(gym.Env):
     def step(self, action):
         self._current_action = action.copy()
 
-        # Scale normalized [-1, 1] action to actuator torque range
+        # PD position control: action sets target joint positions
+        target_pos = self.default_joint_pos + action * self.action_scale
+        current_pos = self.data.qpos[7:]
+        current_vel = self.data.qvel[6:]
+        torques = self.kp * (target_pos - current_pos) - self.kd * current_vel
+        # Clip to actuator limits
         ctrl_max = self.model.actuator_ctrlrange[:, 1]
-        self.data.ctrl[:] = action * ctrl_max
+        self.data.ctrl[:] = np.clip(torques, -ctrl_max, ctrl_max)
 
         # Apply occasional external push
         self._apply_external_push()
