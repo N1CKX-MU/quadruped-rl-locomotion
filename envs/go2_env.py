@@ -153,15 +153,16 @@ class Go2Env(gym.Env):
         base_ang_vel = self.data.qvel[3:6]
 
         # 1. Linear velocity tracking (dominant positive signal)
-        lin_vel_error = (self.cmd_vel[0] - base_lin_vel[0]) ** 2
-        r_lin_vel = math.exp(-lin_vel_error / 0.5) * 2.0
+        # Direct reward for forward velocity, clipped to target
+        forward_vel = min(base_lin_vel[0], self.cmd_vel[0])
+        r_lin_vel = max(0.0, forward_vel) * 3.0
 
         # 2. Angular velocity tracking (yaw)
         ang_vel_error = (self.cmd_vel[2] - base_ang_vel[2]) ** 2
         r_ang_vel = math.exp(-ang_vel_error / 0.25) * 0.5
 
-        # 3. Alive bonus (kept small so velocity tracking dominates)
-        r_alive = 0.2
+        # 3. Alive bonus (small — must not dominate velocity)
+        r_alive = 0.1
 
         # 4. Lateral velocity penalty (don't crab-walk)
         r_lateral = -abs(base_lin_vel[1]) * 0.5
