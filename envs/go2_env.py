@@ -297,9 +297,9 @@ class Go2Env(gym.Env):
     def step(self, action):
         self._current_action = action.copy()
 
-        # Convert normalized action to joint position targets
-        target = self.default_joint_pos + action * self.action_scale
-        self.data.ctrl[:] = target
+        # Scale normalized [-1, 1] action to actuator torque range
+        ctrl_max = self.model.actuator_ctrlrange[:, 1]
+        self.data.ctrl[:] = action * ctrl_max
 
         # Apply occasional external push
         self._apply_external_push()
