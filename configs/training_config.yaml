@@ -13,7 +13,7 @@ environment:
 
 training:
   algorithm: "PPO"
-  total_timesteps: 2_000_000
+  total_timesteps: 5_000_000
   n_envs: 8                   # Parallel environments
   learning_rate: 3.0e-4
   n_steps: 2048
@@ -32,8 +32,8 @@ training:
 curriculum:
   enabled: true
   start_vel: 0.3              # Starting target velocity (m/s)
-  max_vel: 1.2                # Final target velocity (m/s)
-  warmup_steps: 500_000       # Steps to reach max velocity
+  max_vel: 0.8                # Final target velocity (m/s)
+  warmup_steps: 1_000_000     # Steps to reach max velocity
 
 logging:
   log_dir: "logs/"
