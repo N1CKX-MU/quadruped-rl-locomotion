@@ -10,4 +10,6 @@ logs/eval/
 !logs/*.md
 assets/*.mp4
 assets/*.gif
+!assets/go2_walking.gif
+!assets/go2_walking.mp4
 .DS_Store
