@@ -3,8 +3,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 mujoco_menagerie/
-models/*.zip
-models/*.pkl
+models/
 logs/tensorboard/
 logs/eval/
 !logs/*.md
