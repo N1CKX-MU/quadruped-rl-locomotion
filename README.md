@@ -277,7 +277,10 @@ quadruped-rl-locomotion/
 │   ├── record_video.py             # Record MP4 + GIF with tracking camera
 │   ├── compare_algorithms.py       # Train PPO, SAC, TD3 side by side
 │   ├── plot_results.py             # Plot training curves from TensorBoard logs
-│   └── verify_model.py             # Sanity check: load env, step random actions
+│   ├── verify_model.py             # Sanity check: load env, step random actions
+│   ├── gait_analysis.py            # Foot contact analysis + gait diagram
+│   ├── generate_terrain.py         # Heightfield terrain generation
+│   └── record_push_recovery.py     # Push recovery demo recording
 ├── models/                         # Trained weights (gitignored)
 ├── logs/                           # Evaluation results and training logs
 ├── assets/                         # Demo GIFs and videos
@@ -295,6 +298,79 @@ quadruped-rl-locomotion/
 | RL algorithms | [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) | PPO, SAC, TD3 implementations |
 | Training monitoring | [TensorBoard](https://www.tensorflow.org/tensorboard) | Loss curves, reward tracking |
 | Video recording | [imageio](https://imageio.readthedocs.io/) | MP4 + GIF export |
+
+## Advanced Analysis
+
+### Gait Analysis
+
+The trained policy develops an emergent **trot gait** — diagonal leg pairs (FL+RR, FR+RL) alternate in a coordinated pattern without any explicit gait specification in the reward function. The gait regularity reward term (worth only 0.1 per step) provides a gentle bias toward diagonal coordination, but the trot emerges primarily because it is the most energy-efficient stable gait at the target speed.
+
+```bash
+# Generate gait diagram from trained policy
+make gait-analysis
+```
+
+<!-- ![Gait Diagram](assets/gait_analysis.png) -->
+
+### Push Recovery
+
+The policy shows robustness to external perturbations, recovering from lateral velocity impulses of up to 2.0 m/s. This robustness comes from the combination of domain randomization (random pushes every 200 steps during training) and the orientation penalty in the reward function.
+
+```bash
+# Record push recovery demo
+make push-recovery
+```
+
+<!-- ![Push Recovery](assets/go2_push_recovery.gif) -->
+
+### Rough Terrain
+
+A heightfield terrain generator creates Gaussian-smoothed random bumps for testing locomotion robustness on uneven ground.
+
+```bash
+# Generate terrain XML and heightfield
+make terrain
+```
+
+---
+
+## Sim-to-Real Considerations
+
+This project is simulation-only, but the architecture is designed with sim-to-real transfer in mind. Here's what would be needed to deploy on a physical Unitree Go2:
+
+### What transfers directly
+
+| Component | Sim | Real | Transfer difficulty |
+|:---|:---|:---|:---|
+| PD position controller | Software PD on torque actuators | Go2 SDK accepts position targets natively | Trivial — the SDK handles PD internally |
+| Policy network | MLP [256, 256], ~135K params | Runs at 25 Hz on any embedded CPU | Trivial — inference is <1ms |
+| Observation space | From `qpos`/`qvel` | IMU + joint encoders provide the same signals | Moderate — sensor noise differs |
+| Action space | Position offsets from default pose | Same representation, mapped to SDK joint commands | Direct mapping |
+
+### The sim-to-real gap
+
+The main challenges for real deployment:
+
+1. **Actuator dynamics.** MuJoCo models the Go2's actuators as ideal torque sources with hard limits (±23.7 Nm). Real motors have delay (~5-10ms), backlash, friction, and torque curves that depend on speed. Training with domain randomization on motor strength (±10-20%) partially addresses this.
+
+2. **Contact modeling.** MuJoCo's contact solver uses soft contacts with well-defined friction cones. Real foot-ground contact is noisy, varies with surface material, and includes deformable rubber foot pads. The foot contact binary signal is particularly unreliable on real hardware.
+
+3. **State estimation.** In simulation, `qvel` gives exact base velocity. On hardware, this must be estimated from IMU integration (drift-prone) or a state estimator fusing IMU + leg kinematics + (optionally) visual odometry. This is often the biggest sim-to-real gap.
+
+4. **Latency.** Sim runs with zero communication delay. Real systems have 5-20ms of sensor-to-actuator latency. Adding artificial observation delay during training (1-3 steps of random delay) is a common mitigation.
+
+### Standard sim-to-real techniques
+
+The following techniques from the literature would improve transfer:
+
+- **Domain randomization** (partially implemented): Randomize friction, mass, motor strength, observation noise, and actuation delay during training so the policy learns to be robust to parameter uncertainty.
+- **Asymmetric actor-critic**: Give the critic access to privileged simulation state (exact contacts, terrain height) while the actor only sees realistic observations. This improves training efficiency without affecting deployment.
+- **Teacher-student distillation**: Train a teacher policy with privileged info, then distill into a student that uses only deployable observations.
+- **Action filtering**: Apply a low-pass filter to actions before sending to motors, reducing high-frequency jitter that real actuators can't track.
+
+> **Reference implementations:** [legged_gym](https://github.com/leggedrobotics/legged_gym) (ETH Zurich) and [walk-these-ways](https://github.com/Improbable-AI/walk-these-ways) (MIT) demonstrate full sim-to-real pipelines for quadruped locomotion using these techniques.
+
+---
 
 ## References
 

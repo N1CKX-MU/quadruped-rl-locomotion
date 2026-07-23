@@ -1,4 +1,4 @@
-.PHONY: setup verify train evaluate record compare plot tensorboard clean
+.PHONY: setup verify train evaluate record compare plot tensorboard gait-analysis terrain push-recovery clean
 
 setup:
 	python3 -m venv venv
@@ -28,6 +28,15 @@ plot:
 
 tensorboard:
 	tensorboard --logdir logs/tensorboard/ --port 6006
+
+gait-analysis:
+	python3 scripts/gait_analysis.py
+
+terrain:
+	python3 scripts/generate_terrain.py
+
+push-recovery:
+	python3 scripts/record_push_recovery.py
 
 clean:
 	rm -rf models/checkpoints/ models/best/ logs/tensorboard/* logs/eval/
