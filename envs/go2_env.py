@@ -345,7 +345,14 @@ class Go2Env(gym.Env):
             self._viewer.sync()
         elif self.render_mode == "rgb_array":
             renderer = mujoco.Renderer(self.model, height=480, width=640)
-            renderer.update_scene(self.data)
+            # Camera tracks the robot body
+            camera = mujoco.MjvCamera()
+            camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            camera.trackbodyid = 1  # Main body
+            camera.distance = 2.0
+            camera.azimuth = 135
+            camera.elevation = -20
+            renderer.update_scene(self.data, camera=camera)
             img = renderer.render()
             renderer.close()
             return img
