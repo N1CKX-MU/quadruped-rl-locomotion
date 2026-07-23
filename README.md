@@ -84,6 +84,19 @@ The reward function required several iterations to produce forward locomotion:
 
 Key insight: the Go2 MJCF uses torque actuators (±23.7 Nm). Sending position targets directly produces near-zero torque. The PD controller layer was essential.
 
+## Algorithm Comparison
+
+PPO, SAC, and TD3 trained for 1M steps each on a single environment:
+
+| Metric | PPO | SAC | TD3 |
+|---|---|---|---|
+| Mean reward | 182.78 | 232.45 | **259.39** |
+| Mean episode length | 264.2 | 243.7 | **440.2** |
+| Survival rate | 0.0% | 0.0% | **10.0%** |
+| Mean forward speed | **0.140 m/s** | 0.027 m/s | 0.012 m/s |
+
+**PPO wins for locomotion.** While TD3 achieves the highest reward (stable standing), PPO is the only algorithm that produces meaningful forward movement. PPO benefits from large on-policy rollouts across parallel environments — with 8 envs and 5M steps, it reached 0.737 m/s. Off-policy methods (SAC, TD3) converge to standing because their replay buffers are dominated by early falling experiences, starving exploration.
+
 ## Installation
 
 ```bash

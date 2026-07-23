@@ -5,7 +5,7 @@ import os
 import sys
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,7 +30,14 @@ def main():
         env.training = False
         env.norm_reward = False
 
-    model = PPO.load(args.model)
+    # Auto-detect algorithm from model path
+    algo_map = {"ppo": PPO, "sac": SAC, "td3": TD3}
+    algo_cls = PPO
+    for name, cls in algo_map.items():
+        if name in args.model.lower():
+            algo_cls = cls
+            break
+    model = algo_cls.load(args.model)
 
     # Metrics accumulators
     ep_rewards = []
