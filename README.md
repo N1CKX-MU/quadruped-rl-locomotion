@@ -150,6 +150,10 @@ Getting a quadruped to walk is not plug-and-play. This section documents the ite
 | 4 | 2M | **Added PD controller** | **0.25 m/s** | First successful locomotion! PD converts position targets to proper torques |
 | 5 | 5M | Slower curriculum (1M warmup), more training | **0.74 m/s** | Stable walking gait at 92% of target speed |
 
+### Training Curves
+
+![Training Curves](assets/training_curves.png)
+
 ### Key Insights
 
 1. **Actuator type matters.** The Go2 MJCF defines torque actuators (±23.7 Nm). The RL policy should output position targets, not raw torques — a PD controller bridges the gap. This is standard in every serious quadruped RL framework.
@@ -303,7 +307,7 @@ quadruped-rl-locomotion/
 
 ### Gait Analysis
 
-The trained policy develops an emergent **bounding gait** — front and rear leg pairs move roughly in phase (FR/RL phase offset ~0.9, RR phase offset ~0.9 relative to FL). The gait regularity reward term provides a gentle bias toward diagonal coordination, but the policy finds bounding more effective at the target speed. The rear legs show higher duty factors (especially RR at 77%), indicating the policy relies heavily on rear-leg propulsion — consistent with biological quadrupeds where hindlimbs generate most forward thrust.
+The trained policy develops an emergent gait with all four feet coordinating at ~3 Hz stride frequency. Phase offsets (FR=0.25, RL=0.88, RR=0.62 relative to FL) show a sequential pattern rather than a clean trot or bound — the policy discovered its own efficient coordination. The rear legs show higher duty factors (RL 59%, RR 69%), indicating rear-heavy propulsion consistent with biological quadrupeds where hindlimbs generate most forward thrust.
 
 ```bash
 # Generate gait diagram from trained policy
