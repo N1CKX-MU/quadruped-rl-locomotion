@@ -329,7 +329,9 @@ make push-recovery
 
 ### Rough Terrain
 
-A heightfield terrain generator creates Gaussian-smoothed random bumps for testing locomotion robustness on uneven ground.
+A heightfield terrain generator creates Gaussian-smoothed random bumps for testing locomotion robustness on uneven ground. The policy — trained only on flat ground — survives 400+ steps on rough terrain (0.05m max bump height) before falling.
+
+![Rough Terrain](assets/go2_terrain.gif)
 
 ```bash
 # Generate terrain XML and heightfield

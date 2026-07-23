@@ -14,4 +14,5 @@ assets/*.gif
 !assets/go2_push_recovery.gif
 !assets/gait_analysis.png
 !assets/training_curves.png
+!assets/go2_terrain.gif
 .DS_Store
