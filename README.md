@@ -303,14 +303,14 @@ quadruped-rl-locomotion/
 
 ### Gait Analysis
 
-The trained policy develops an emergent **trot gait** — diagonal leg pairs (FL+RR, FR+RL) alternate in a coordinated pattern without any explicit gait specification in the reward function. The gait regularity reward term (worth only 0.1 per step) provides a gentle bias toward diagonal coordination, but the trot emerges primarily because it is the most energy-efficient stable gait at the target speed.
+The trained policy develops an emergent **bounding gait** — front and rear leg pairs move roughly in phase (FR/RL phase offset ~0.9, RR phase offset ~0.9 relative to FL). The gait regularity reward term provides a gentle bias toward diagonal coordination, but the policy finds bounding more effective at the target speed. The rear legs show higher duty factors (especially RR at 77%), indicating the policy relies heavily on rear-leg propulsion — consistent with biological quadrupeds where hindlimbs generate most forward thrust.
 
 ```bash
 # Generate gait diagram from trained policy
 make gait-analysis
 ```
 
-<!-- ![Gait Diagram](assets/gait_analysis.png) -->
+![Gait Diagram](assets/gait_analysis.png)
 
 ### Push Recovery
 
@@ -321,7 +321,7 @@ The policy shows robustness to external perturbations, recovering from lateral v
 make push-recovery
 ```
 
-<!-- ![Push Recovery](assets/go2_push_recovery.gif) -->
+![Push Recovery](assets/go2_push_recovery.gif)
 
 ### Rough Terrain
 

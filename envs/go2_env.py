@@ -42,7 +42,7 @@ class Go2Env(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 25}
 
     # Foot geom names in the Go2 MJCF (MuJoCo Menagerie convention)
-    FOOT_GEOM_NAMES = ["FL_foot", "FR_foot", "RL_foot", "RR_foot"]
+    FOOT_GEOM_NAMES = ["FL", "FR", "RL", "RR"]
 
     def __init__(
         self,
