@@ -1,8 +1,8 @@
 <mujoco model="go2_rough_terrain">
-  <include file="../mujoco_menagerie/unitree_go2/go2.xml"/>
+  <include file="../mujoco_menagerie/unitree_go2/scene.xml"/>
 
   <asset>
-    <hfield name="terrain" file="terrain_data.bin"
+    <hfield name="terrain" file="terrain_data.bin" nrow="200" ncol="200"
             size="10.0 10.0 0.05 0.001"/>
     <texture name="grid" type="2d" builtin="checker" rgb1="0.4 0.45 0.5"
              rgb2="0.35 0.4 0.45" width="512" height="512"/>
@@ -10,7 +10,6 @@
   </asset>
 
   <worldbody>
-    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
     <geom type="hfield" hfield="terrain" material="terrain_mat"
            pos="5.0 0 0" contype="1" conaffinity="1"/>
   </worldbody>
