@@ -1,363 +1,742 @@
-"""Custom Gymnasium environment for the Unitree Go2 quadruped robot.
+"""Unitree Go2 locomotion environment (v2).
 
-Implements a multi-term reward function encouraging natural walking gaits,
-command velocity tracking, and robust locomotion.
+What changed from v1, and why
+-----------------------------
+Every numbered item below is a bug fixed or a capability added; each is
+explained at length in docs/14-debugging-log.md. Read that chapter alongside
+this file.
+
+B1  The nominal pose is now taken from the model's ``home`` keyframe, not from
+    ``qpos0``. v1 took ``qpos0``, which is all twelve joints at 0 rad - legs
+    straight and splayed, a pose the robot cannot stand in. With an action
+    scale of 0.5 rad the policy could not reach the real standing calf angle of
+    -1.8 rad from there, so it was being asked to walk out of a pose it could
+    never leave. This single line is the root cause of v1's ceiling.
+B2  All velocities used by the reward and the observation are rotated into the
+    base frame. ``qvel[0:3]`` is world-frame; tracking it means "forward" stops
+    meaning forward the moment the robot yaws.
+B3  Commands are three-dimensional and resampled (see envs/commands.py), and
+    both linear axes are tracked, so strafing and turning are expressible.
+B6  The PD law is evaluated at every physics substep instead of once per
+    control step. Holding a "PD" torque constant for 40 ms makes the damping
+    term meaningless exactly when it is needed.
+B7  Control runs at 50 Hz (decimation 10 at a 2 ms physics step) instead of
+    25 Hz.
+B8  Resets randomise base height, attitude, velocity and gait phase, not just
+    joint angles.
+B9  A single renderer is created lazily and reused, instead of building and
+    destroying an OpenGL context per frame.
+B10 Foot contact requires contact *with the floor* above a force threshold,
+    rather than any contact touching a foot geom (which counted foot-on-shin
+    self-contact).
+B11 Pushes are applied as forces through ``xfrc_applied`` over a randomised
+    interval and duration, rather than teleporting momentum into ``qvel`` on a
+    fixed 200-step schedule the policy could memorise.
+B16 ``mujoco.viewer`` is imported explicitly; v1's ``render("human")`` would
+    have raised AttributeError.
 """
 
-import math
+from __future__ import annotations
+
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 import mujoco
+import mujoco.viewer  # B16: v1 used mujoco.viewer without importing it
+
+from envs import gait as gait_mod
+from envs import rewards as reward_mod
+from envs.commands import Command, CommandRanges, CommandSampler
 
 
 class Go2Env(gym.Env):
-    """Unitree Go2 quadruped locomotion environment.
+    """Command-conditioned locomotion for the Unitree Go2.
 
-    Observation space (49 dims):
-        - Base orientation quaternion (4)
-        - Base angular velocity (3)
-        - Base linear velocity (3)
-        - Joint positions (12)
-        - Joint velocities (12)
-        - Previous actions (12)
-        - Foot contact forces (4) - binary
-        - Command velocity (vx, vy, yaw_rate) (3) - target
+    Observation (50 dims), each block scaled to roughly unit magnitude so the
+    policy sees a well-conditioned input even before VecNormalize:
 
-    Action space (12 dims):
-        Position target deltas from default standing pose, normalized to [-1, 1]
-        and scaled by action_scale (default 0.3 rad).
+        projected gravity, base frame        3
+        base angular velocity, base frame    3
+        base linear velocity, base frame     3
+        joint positions minus nominal       12
+        joint velocities                    12
+        previous action                     12
+        command [vx, vy, yaw_rate]           3
+        gait clock [sin 2*pi*phi, cos ...]   2
+                                            --
+                                            50
 
-    Reward (8 terms):
-        + linear velocity tracking (exp penalty on error)
-        + angular velocity tracking (yaw rate)
-        + alive bonus
-        - lateral velocity penalty
-        - body orientation penalty (stay upright)
-        - action rate penalty (smooth motions)
-        - joint torque penalty (energy efficiency)
-        + foot contact regularity (alternating gait)
+    Two deliberate choices worth defending:
+
+    * Projected gravity replaces v1's raw quaternion. A quaternion carries yaw,
+      and yaw is a *commanded* quantity here - feeding absolute yaw in lets the
+      policy correlate behaviour with a heading that has no physical meaning.
+      Projected gravity is the yaw-free part of the attitude, which is exactly
+      the part that matters for staying upright.
+    * The gait clock is in the observation. Without it the policy cannot know
+      which part of the stride it is in, and the phase reward would look like
+      noise. With it, the gait becomes a commandable input.
+
+    Action (12 dims), in [-1, 1]: offsets from the nominal joint pose, scaled by
+    ``action_scale`` and fed to a joint-space PD controller. The policy sets
+    *targets*, not torques - the same interface a real Go2 exposes.
     """
 
-    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 25}
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 50}
 
-    # Foot geom names in the Go2 MJCF (MuJoCo Menagerie convention)
-    FOOT_GEOM_NAMES = ["FL", "FR", "RL", "RR"]
+    # Foot ordering used consistently across gait.py, rewards.py and this file.
+    FOOT_GEOM_NAMES = ("FL", "FR", "RL", "RR")
+
+    # Observation scales. Chosen so each block lands in roughly [-1, 1] for
+    # typical motion: joint velocities reach ~20 rad/s, angular rates ~4 rad/s.
+    OBS_SCALE_ANG_VEL = 0.25
+    OBS_SCALE_LIN_VEL = 2.0
+    OBS_SCALE_JOINT_VEL = 0.05
+    OBS_SCALE_CMD = np.array([2.0, 2.0, 0.25], dtype=np.float64)
+
+    # World-frame gravity direction, rotated into the base frame each step.
+    _GRAVITY_DIR = np.array([0.0, 0.0, -1.0])
 
     def __init__(
         self,
         xml_path="mujoco_menagerie/unitree_go2/scene.xml",
-        frame_skip=20,
-        cmd_vel=(0.5, 0.0, 0.0),
-        action_scale=0.5,
-        healthy_z_range=(0.15, 0.6),
-        max_pitch_roll=1.0,
-        reset_noise_scale=0.05,
+        decimation=10,
+        action_scale=0.30,
+        kp=55.0,
+        kd=1.4,
         max_episode_steps=1000,
+        # Termination
+        min_base_height=0.12,
+        max_pitch_roll=0.8,
+        # Reset randomisation
+        reset_noise_scale=0.1,
+        # Commands
+        command_ranges=None,
+        stand_probability=0.10,
+        command_resample_interval_s=5.0,
+        gaits=("trot",),
+        # Reward
+        reward_weights=None,
+        lin_vel_sigma=0.20,
+        ang_vel_sigma=0.25,
+        # Robustness
         randomize_dynamics=False,
+        push_enabled=True,
+        push_interval_s=(3.0, 7.0),
+        push_duration_s=0.15,
+        push_force=(-40.0, 40.0),
+        obs_noise_scale=0.0,
         render_mode=None,
+        render_size=(640, 480),
     ):
-        self.frame_skip = frame_skip
-        self.action_scale = action_scale
-        self.healthy_z_range = healthy_z_range
-        self.max_pitch_roll = max_pitch_roll
-        self.reset_noise_scale = reset_noise_scale
-        self.max_episode_steps = max_episode_steps
-        self.randomize_dynamics = randomize_dynamics
-        self.render_mode = render_mode
-
-        # Load MuJoCo model
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
 
-        self.dt = self.model.opt.timestep * self.frame_skip
+        self.decimation = int(decimation)
+        self.physics_dt = float(self.model.opt.timestep)
+        self.dt = self.physics_dt * self.decimation  # control period (B7: 0.02 s)
+        self.metadata["render_fps"] = int(round(1.0 / self.dt))
 
-        # Store default standing pose for action offsets
-        mujoco.mj_resetData(self.model, self.data)
-        mujoco.mj_forward(self.model, self.data)
-        self.default_joint_pos = self.data.qpos[7:].copy()
+        self.action_scale = float(action_scale)
+        self.kp = float(kp)
+        self.kd = float(kd)
+        self.max_episode_steps = int(max_episode_steps)
+        self.min_base_height = float(min_base_height)
+        self.max_pitch_roll = float(max_pitch_roll)
+        self.reset_noise_scale = float(reset_noise_scale)
+        self.randomize_dynamics = bool(randomize_dynamics)
+        self.obs_noise_scale = float(obs_noise_scale)
+        self.render_mode = render_mode
+        self.render_size = tuple(render_size)
 
-        # Command velocity target [vx, vy, yaw_rate]
-        self.cmd_vel = np.array(cmd_vel, dtype=np.float32)
+        self.push_enabled = bool(push_enabled)
+        self.push_interval_s = tuple(push_interval_s)
+        self.push_duration_s = float(push_duration_s)
+        self.push_force = tuple(push_force)
 
-        # Foot geom IDs for contact detection
+        # ---- B1: nominal pose from the 'home' keyframe -------------------- #
+        self._home_key_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_KEY, "home"
+        )
+        if self._home_key_id < 0:
+            raise RuntimeError(
+                "The MJCF has no 'home' keyframe. v2 relies on it for the nominal "
+                "standing pose; without it the policy is asked to walk out of a "
+                "pose the robot cannot stand in (see docs/14-debugging-log.md, B1)."
+            )
+        self.default_joint_pos = self.model.key_qpos[self._home_key_id, 7:].copy()
+        self.nominal_base_height = float(self.model.key_qpos[self._home_key_id, 2])
+
+        # ---- Indices ------------------------------------------------------ #
+        self.n_joints = self.model.nu
+        self.actuated_joint_ids = self.model.actuator_trnid[:, 0].copy()
+        joint_ranges = self.model.jnt_range[self.actuated_joint_ids].copy()
+        # Soften by 5% of the travel on each side, so the policy is discouraged
+        # from leaning on the hard endstop that MuJoCo enforces for it.
+        span = joint_ranges[:, 1] - joint_ranges[:, 0]
+        self.soft_joint_limits = np.stack(
+            [joint_ranges[:, 0] + 0.05 * span, joint_ranges[:, 1] - 0.05 * span],
+            axis=1,
+        )
+        self.torque_limits = self.model.actuator_ctrlrange[:, 1].copy()
+
+        self.floor_geom_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+        if self.floor_geom_id < 0:
+            raise RuntimeError("scene.xml is missing a geom named 'floor'.")
+
         self.foot_geom_ids = []
         for name in self.FOOT_GEOM_NAMES:
             gid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
-            if gid >= 0:
-                self.foot_geom_ids.append(gid)
-        # Fallback: if names not found, use last 4 geoms
-        if len(self.foot_geom_ids) != 4:
-            self.foot_geom_ids = list(range(self.model.ngeom - 4, self.model.ngeom))
+            if gid < 0:
+                raise RuntimeError(
+                    "Foot geom %r not found. v1 silently fell back to 'the last "
+                    "four geoms', which is how you end up rewarding contacts on "
+                    "the wrong bodies." % name
+                )
+            self.foot_geom_ids.append(gid)
+        self.foot_geom_ids = np.array(self.foot_geom_ids, dtype=np.int32)
 
-        # PD controller gains (applied on top of torque actuators)
-        self.kp = 40.0   # Position gain (Nm/rad)
-        self.kd = 1.0    # Damping gain (Nm·s/rad)
+        # B10: everything on the robot that is NOT a foot. Ground contact with
+        # any of these is a collision (knee, shin, hip, trunk).
+        self.base_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "base"
+        )
+        foot_set = set(self.foot_geom_ids.tolist())
+        self.non_foot_geom_ids = np.array(
+            [
+                g
+                for g in range(self.model.ngeom)
+                if self.model.geom_bodyid[g] != 0
+                and g not in foot_set
+                and self.model.geom_contype[g] != 0
+            ],
+            dtype=np.int32,
+        )
+        # Trunk-only subset: touching the ground with these ends the episode.
+        self.trunk_geom_ids = np.array(
+            [g for g in self.non_foot_geom_ids if self.model.geom_bodyid[g] == self.base_body_id],
+            dtype=np.int32,
+        )
 
-        # Store default dynamics for domain randomization
-        self.default_friction = self.model.geom_friction.copy()
-        self.default_mass = self.model.body_mass.copy()
+        # ---- Commands and gait -------------------------------------------- #
+        self.command_sampler = CommandSampler(
+            ranges=command_ranges or CommandRanges(),
+            stand_probability=stand_probability,
+            resample_interval_s=command_resample_interval_s,
+            gaits=tuple(gaits),
+        )
+        self.command = Command()
+        self.gait_phase = 0.0
+        self._gait_offsets, self._gait_duty = gait_mod.gait_params(self.command.gait)
 
-        # Spaces
-        self.n_actuators = self.model.nu
+        # ---- Reward -------------------------------------------------------- #
+        self.reward_weights = reward_mod.resolve_weights(reward_weights)
+        self.lin_vel_sigma = float(lin_vel_sigma)
+        self.ang_vel_sigma = float(ang_vel_sigma)
+
+        # ---- Domain randomisation baselines -------------------------------- #
+        self.default_geom_friction = self.model.geom_friction.copy()
+        self.default_body_mass = self.model.body_mass.copy()
+        self._kp_scale = 1.0
+        self._kd_scale = 1.0
+
+        # ---- Spaces --------------------------------------------------------- #
         self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(self.n_actuators,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(self.n_joints,), dtype=np.float32
         )
-        # 4 + 3 + 3 + 12 + 12 + 12 + 4 + 3 = 53
+        self.obs_dim = 3 + 3 + 3 + self.n_joints * 3 + 3 + 2
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(53,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
 
-        # Internal state
-        self.prev_action = np.zeros(self.n_actuators, dtype=np.float32)
+        # ---- Episode state -------------------------------------------------- #
         self.step_count = 0
+        self.prev_action = np.zeros(self.n_joints)
+        self._current_action = np.zeros(self.n_joints)
+        self._prev_joint_vel = np.zeros(self.n_joints)
+        self._last_torques = np.zeros(self.n_joints)
+        self._feet_air_time = np.zeros(4)
+        self._last_contact = np.zeros(4)
+        self._time_since_command = 0.0
+        self._push_countdown = 0.0
+        self._push_remaining = 0.0
+        self._reward_terms = {}
+        self._tracking_scores = []
 
-        # Renderer
+        # Per-step frame-conversion cache (see _refresh_frame_cache).
+        self._lin_vel_b = np.zeros(3)
+        self._ang_vel_b = np.zeros(3)
+        self._proj_gravity = self._GRAVITY_DIR.copy()
+
         self._viewer = None
+        self._renderer = None  # B9: created once, reused
+        self._camera = None
+
+    # ------------------------------------------------------------------ #
+    #  Public control surface (used by callbacks, play.py, evaluate.py)   #
+    # ------------------------------------------------------------------ #
+
+    def set_command_ranges(self, ranges):
+        """Replace the sampler's ranges. Called by the curriculum callback."""
+        if isinstance(ranges, dict):
+            ranges = CommandRanges(**ranges)
+        self.command_sampler.ranges = ranges
+
+    def set_command(self, lin_vel_x=None, lin_vel_y=None, ang_vel_yaw=None,
+                    gait=None, gait_frequency=None, base_height=None):
+        """Override the live command. Used for teleop and for evaluation grids."""
+        c = self.command
+        if lin_vel_x is not None:
+            c.lin_vel_x = float(lin_vel_x)
+        if lin_vel_y is not None:
+            c.lin_vel_y = float(lin_vel_y)
+        if ang_vel_yaw is not None:
+            c.ang_vel_yaw = float(ang_vel_yaw)
+        if gait_frequency is not None:
+            c.gait_frequency = float(gait_frequency)
+        if base_height is not None:
+            c.base_height = float(base_height)
+        if gait is not None:
+            c.gait = str(gait)
+        self._apply_gait(c.gait)
+        self._time_since_command = 0.0
 
     def set_cmd_vel(self, cmd_vel):
-        """Update the command velocity target. Used by curriculum callback."""
-        self.cmd_vel = np.array(cmd_vel, dtype=np.float32)
+        """Backwards-compatible shim for v1 scripts and the old callback API."""
+        self.set_command(lin_vel_x=cmd_vel[0], lin_vel_y=cmd_vel[1],
+                         ang_vel_yaw=cmd_vel[2])
+
+    def get_command(self):
+        return self.command
+
+    def _last_tracking_score(self):
+        """Mean tracking score since the last call, then reset the accumulator.
+
+        Exists so a trainer can read the curriculum signal with one broadcast
+        ``env_method`` call per rollout instead of inspecting every info dict.
+        Returns None when no steps have been taken since the last call.
+        """
+        if not self._tracking_scores:
+            return None
+        score = float(np.mean(self._tracking_scores))
+        self._tracking_scores.clear()
+        return score
+
+    def _apply_gait(self, name):
+        self._gait_offsets, self._gait_duty = gait_mod.gait_params(name)
+
+    # ------------------------------------------------------------------ #
+    #  Kinematic helpers                                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _cross3(a0, a1, a2, b0, b1, b2):
+        """Explicit 3-vector cross product.
+
+        This exists purely for speed, and the speed is not marginal. Profiling
+        the step loop showed ``np.cross`` consuming more wall-clock time than
+        the MuJoCo physics itself: it is a fully general n-dimensional routine
+        that runs ``moveaxis`` and ``normalize_axis_tuple`` on every call, and
+        we call it fourteen times per control step on 3-element vectors. Writing
+        out the six multiplications roughly doubles environment throughput.
+        """
+        return (a1 * b2 - a2 * b1,
+                a2 * b0 - a0 * b2,
+                a0 * b1 - a1 * b0)
+
+    @staticmethod
+    def quat_rotate_inverse(quat, vec):
+        """Express a world-frame vector in the body frame. wxyz convention.
+
+        Identity used:  q* v q  =  v - 2w (u x v) + 2 u x (u x v),  u = (x,y,z).
+        Verified against MuJoCo's own mju_rotVecQuat in tests/test_math.py -
+        this helper was correct in v1 too; the bug was that it was never applied
+        to the velocities (B2).
+        """
+        w = float(quat[0])
+        ux, uy, uz = float(quat[1]), float(quat[2]), float(quat[3])
+        vx, vy, vz = float(vec[0]), float(vec[1]), float(vec[2])
+        tx, ty, tz = Go2Env._cross3(ux, uy, uz, vx, vy, vz)
+        tx, ty, tz = 2.0 * tx, 2.0 * ty, 2.0 * tz
+        cx, cy, cz = Go2Env._cross3(ux, uy, uz, tx, ty, tz)
+        return np.array([vx - w * tx + cx, vy - w * ty + cy, vz - w * tz + cz])
+
+    # The three frame conversions below are recomputed once per control step and
+    # cached, rather than on every access. The observation, the reward state and
+    # the termination check all want them, and recomputing meant seven quaternion
+    # rotations per step where three suffice.
+
+    def _refresh_frame_cache(self):
+        q = self.data.qpos[3:7]
+        self._lin_vel_b = self.quat_rotate_inverse(q, self.data.qvel[0:3])
+        self._ang_vel_b = self.quat_rotate_inverse(q, self.data.qvel[3:6])
+        self._proj_gravity = self.quat_rotate_inverse(q, self._GRAVITY_DIR)
+
+    def _base_lin_vel(self):
+        return self._lin_vel_b
+
+    def _base_ang_vel(self):
+        return self._ang_vel_b
+
+    def _projected_gravity(self):
+        return self._proj_gravity
+
+    # ------------------------------------------------------------------ #
+    #  Contacts (B10)                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _contact_state(self, force_threshold=1.0):
+        """Return ``(foot_contacts, undesired_contact_count, trunk_touching)``.
+
+        A foot counts as loaded only when it is in contact *with the floor* and
+        the normal force exceeds a threshold. v1 flagged a foot on any contact
+        involving its geom, including foot-against-shin self-contact, and used
+        the mere existence of a contact pair rather than whether it carried
+        load - so a foot grazing the ground scored the same as a foot bearing
+        the robot's weight.
+        """
+        contacts = np.zeros(4)
+        undesired = 0.0
+        trunk = False
+        foot_ids = self.foot_geom_ids
+        force = np.zeros(6)
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            g1, g2 = c.geom1, c.geom2
+            if g1 == self.floor_geom_id:
+                other = g2
+            elif g2 == self.floor_geom_id:
+                other = g1
+            else:
+                continue  # robot-on-robot contact; not a ground contact
+            mujoco.mj_contactForce(self.model, self.data, i, force)
+            if abs(force[0]) < force_threshold:
+                continue
+            hit = np.where(foot_ids == other)[0]
+            if hit.size:
+                contacts[hit[0]] = 1.0
+            else:
+                undesired += 1.0
+                if other in self.trunk_geom_ids:
+                    trunk = True
+        return contacts, undesired, trunk
+
+    def _feet_height(self):
+        """Height of each foot geom above the ground plane, world frame."""
+        return self.data.geom_xpos[self.foot_geom_ids][:, 2].copy()
+
+    def _feet_velocity_xy(self):
+        """Horizontal velocity of each foot geom, world frame. Shape (4, 2)."""
+        out = np.zeros((4, 2))
+        res = np.zeros(6)
+        for i, gid in enumerate(self.foot_geom_ids):
+            mujoco.mj_objectVelocity(
+                self.model, self.data, mujoco.mjtObj.mjOBJ_GEOM, int(gid), res, 0
+            )
+            out[i] = res[3:5]  # res is [angular(3), linear(3)]
+        return out
 
     # ------------------------------------------------------------------ #
     #  Observation                                                        #
     # ------------------------------------------------------------------ #
 
     def _get_obs(self):
-        quat = self.data.qpos[3:7].copy()          # 4: base orientation
-        ang_vel = self.data.qvel[3:6].copy()        # 3: base angular velocity
-        lin_vel = self.data.qvel[0:3].copy()        # 3: base linear velocity
-        joint_pos = self.data.qpos[7:].copy()       # 12: joint positions
-        joint_vel = self.data.qvel[6:].copy()       # 12: joint velocities
-        contacts = self._get_foot_contacts()        # 4: binary foot contacts
-        return np.concatenate([
-            quat, ang_vel, lin_vel,
-            joint_pos, joint_vel,
+        joint_pos = self.data.qpos[7:] - self.default_joint_pos
+        joint_vel = self.data.qvel[6:]
+        phase_rad = 2.0 * np.pi * self.gait_phase
+
+        obs = np.concatenate([
+            self._projected_gravity(),
+            self._base_ang_vel() * self.OBS_SCALE_ANG_VEL,
+            self._base_lin_vel() * self.OBS_SCALE_LIN_VEL,
+            joint_pos,
+            joint_vel * self.OBS_SCALE_JOINT_VEL,
             self.prev_action,
-            contacts,
-            self.cmd_vel,
-        ]).astype(np.float32)
+            self.command.vec * self.OBS_SCALE_CMD,
+            [np.sin(phase_rad), np.cos(phase_rad)],
+        ])
 
-    def _get_foot_contacts(self):
-        """Return binary contact indicators for each foot."""
-        contacts = np.zeros(4, dtype=np.float32)
-        for i in range(self.data.ncon):
-            c = self.data.contact[i]
-            for foot_idx, gid in enumerate(self.foot_geom_ids):
-                if c.geom1 == gid or c.geom2 == gid:
-                    contacts[foot_idx] = 1.0
-        return contacts
+        if self.obs_noise_scale > 0.0:
+            obs = obs + self.np_random.normal(0.0, self.obs_noise_scale, obs.shape)
+        return obs.astype(np.float32)
 
     # ------------------------------------------------------------------ #
-    #  Reward (8 terms)                                                   #
+    #  Reward                                                             #
     # ------------------------------------------------------------------ #
 
-    def _compute_reward(self):
-        base_lin_vel = self.data.qvel[0:3]
-        base_ang_vel = self.data.qvel[3:6]
-
-        # 1. Linear velocity tracking
-        lin_vel_error = (self.cmd_vel[0] - base_lin_vel[0]) ** 2
-        r_lin_vel = math.exp(-lin_vel_error / 0.25) * 2.0
-
-        # 2. Angular velocity tracking (yaw)
-        ang_vel_error = (self.cmd_vel[2] - base_ang_vel[2]) ** 2
-        r_ang_vel = math.exp(-ang_vel_error / 0.25) * 0.5
-
-        # 3. Alive bonus
-        r_alive = 0.5
-
-        # 4. Lateral velocity penalty (don't crab-walk)
-        r_lateral = -abs(base_lin_vel[1]) * 0.5
-
-        # 5. Body orientation penalty (stay upright via projected gravity)
-        quat = self.data.qpos[3:7]
-        projected_gravity = self._quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0]))
-        r_orient = -np.sum(np.square(projected_gravity[:2])) * 1.0
-
-        # 6. Action rate penalty (smooth motions)
-        action_diff = self.prev_action - self._current_action
-        r_action_rate = -np.sum(np.square(action_diff)) * 0.01
-
-        # 7. Joint torque penalty (energy efficiency)
-        torques = self.data.qfrc_actuator[6:] if len(self.data.qfrc_actuator) > 6 else self.data.ctrl
-        r_torque = -np.sum(np.square(torques)) * 0.0001
-
-        # 8. Foot contact regularity (encourage alternating diagonal pairs)
-        r_contact = self._gait_reward() * 0.1
-
-        reward = (r_lin_vel + r_ang_vel + r_alive +
-                  r_lateral + r_orient + r_action_rate +
-                  r_torque + r_contact)
-
-        self._reward_components = {
-            "r_lin_vel": r_lin_vel,
-            "r_ang_vel": r_ang_vel,
-            "r_alive": r_alive,
-            "r_lateral": r_lateral,
-            "r_orient": r_orient,
-            "r_action_rate": r_action_rate,
-            "r_torque": r_torque,
-            "r_contact": r_contact,
-        }
-
-        return reward
-
-    def _gait_reward(self):
-        """Reward alternating diagonal foot contacts (trot gait)."""
-        contacts = self._get_foot_contacts()
-        # Trot: FL+RR and FR+RL should alternate
-        # Reward when diagonal pairs match
-        diag1 = contacts[0] * contacts[3]  # FL & RR
-        diag2 = contacts[1] * contacts[2]  # FR & RL
-        # Reward if one diagonal pair is active and the other is not
-        return abs(diag1 - diag2)
-
-    @staticmethod
-    def _quat_rotate_inverse(quat, vec):
-        """Rotate a vector by the inverse of a quaternion (wxyz convention)."""
-        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
-        # Conjugate quaternion rotation: q* v q
-        t = 2.0 * np.cross(np.array([x, y, z]), vec)
-        return vec - w * t + np.cross(np.array([x, y, z]), t)
+    def _build_reward_state(self, contacts, undesired, first_contact, air_time):
+        desired = gait_mod.desired_contact(
+            self.gait_phase, self._gait_offsets, self._gait_duty
+        )
+        return reward_mod.RewardState(
+            lin_vel_b=self._base_lin_vel(),
+            ang_vel_b=self._base_ang_vel(),
+            proj_gravity=self._projected_gravity(),
+            base_height=float(self.data.qpos[2]),
+            joint_pos=self.data.qpos[7:].copy(),
+            joint_vel=self.data.qvel[6:].copy(),
+            joint_vel_prev=self._prev_joint_vel.copy(),
+            default_joint_pos=self.default_joint_pos,
+            soft_joint_limits=self.soft_joint_limits,
+            torques=self._last_torques.copy(),
+            action=self._current_action.copy(),
+            prev_action=self.prev_action.copy(),
+            contact=contacts,
+            desired_contact=desired,
+            feet_air_time=air_time,
+            feet_first_contact=first_contact,
+            feet_vel_xy=self._feet_velocity_xy(),
+            feet_height=self._feet_height(),
+            cmd=self.command.vec,
+            cmd_base_height=self.command.base_height,
+            undesired_contacts=undesired,
+            dt=self.dt,
+            lin_vel_sigma=self.lin_vel_sigma,
+            ang_vel_sigma=self.ang_vel_sigma,
+        )
 
     # ------------------------------------------------------------------ #
-    #  Termination                                                        #
-    # ------------------------------------------------------------------ #
-
-    def _check_termination(self):
-        z = self.data.qpos[2]
-        if z < self.healthy_z_range[0] or z > self.healthy_z_range[1]:
-            return True
-
-        # Check pitch and roll from quaternion
-        quat = self.data.qpos[3:7]
-        # Convert quaternion to euler (approximate pitch/roll)
-        w, x, y, z_q = quat[0], quat[1], quat[2], quat[3]
-        # Roll (x-axis rotation)
-        sinr_cosp = 2.0 * (w * x + y * z_q)
-        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-        roll = math.atan2(sinr_cosp, cosr_cosp)
-        # Pitch (y-axis rotation)
-        sinp = 2.0 * (w * y - z_q * x)
-        sinp = np.clip(sinp, -1.0, 1.0)
-        pitch = math.asin(sinp)
-
-        if abs(roll) > self.max_pitch_roll or abs(pitch) > self.max_pitch_roll:
-            return True
-
-        return False
-
-    # ------------------------------------------------------------------ #
-    #  Domain randomization                                               #
+    #  Randomisation                                                      #
     # ------------------------------------------------------------------ #
 
     def _randomize_domain(self):
-        """Randomize friction and mass at episode reset for robustness."""
+        # Always restore the PD scales, even when randomisation is off, so a
+        # disabled flag really means "nominal dynamics".
+        self._kp_scale = 1.0
+        self._kd_scale = 1.0
         if not self.randomize_dynamics:
             return
 
-        # Friction: +/- 20%
-        for gid in self.foot_geom_ids:
-            scale = self.np_random.uniform(0.8, 1.2)
-            self.model.geom_friction[gid] = self.default_friction[gid] * scale
+        # Ground and foot friction. Sampled from the model defaults each reset
+        # so the randomisation cannot compound across episodes.
+        friction_scale = self.np_random.uniform(0.4, 1.4)
+        for gid in list(self.foot_geom_ids) + [self.floor_geom_id]:
+            self.model.geom_friction[gid] = (
+                self.default_geom_friction[gid] * friction_scale
+            )
 
-        # Mass: +/- 10%
-        for bid in range(self.model.nbody):
-            scale = self.np_random.uniform(0.9, 1.1)
-            self.model.body_mass[bid] = self.default_mass[bid] * scale
+        # Payload on the trunk: a real robot carries a battery, a lidar, a bag.
+        self.model.body_mass[:] = self.default_body_mass
+        self.model.body_mass[self.base_body_id] = (
+            self.default_body_mass[self.base_body_id]
+            + self.np_random.uniform(-1.0, 2.0)
+        )
 
-    def _apply_external_push(self):
-        """Occasionally apply random push for robustness."""
-        if self.step_count > 0 and self.step_count % 200 == 0:
-            push = self.np_random.uniform(-3.0, 3.0, size=3)
-            self.data.qvel[0:3] += push
+        # Actuator gains: stands in for unmodelled motor and driver dynamics.
+        self._kp_scale = float(self.np_random.uniform(0.8, 1.2))
+        self._kd_scale = float(self.np_random.uniform(0.8, 1.2))
+
+    def _schedule_push(self):
+        lo, hi = self.push_interval_s
+        self._push_countdown = float(self.np_random.uniform(lo, hi))
+        self._push_remaining = 0.0
+
+    def _update_push(self):
+        """B11: a real force, for a real duration, at an unpredictable time."""
+        if not self.push_enabled:
+            return
+        if self._push_remaining > 0.0:
+            self._push_remaining -= self.dt
+            if self._push_remaining <= 0.0:
+                self.data.xfrc_applied[self.base_body_id, :3] = 0.0
+                self._schedule_push()
+            return
+
+        self._push_countdown -= self.dt
+        if self._push_countdown <= 0.0:
+            f = self.np_random.uniform(self.push_force[0], self.push_force[1], size=3)
+            f[2] *= 0.25  # mostly horizontal shoves; vertical yanks are unphysical
+            self.data.xfrc_applied[self.base_body_id, :3] = f
+            self._push_remaining = self.push_duration_s
 
     # ------------------------------------------------------------------ #
-    #  Core Gymnasium interface                                           #
+    #  Gymnasium interface                                                #
     # ------------------------------------------------------------------ #
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        mujoco.mj_resetData(self.model, self.data)
 
-        # Add small noise to initial joint positions only
-        noise = self.np_random.uniform(
-            -self.reset_noise_scale, self.reset_noise_scale, size=self.n_actuators
-        )
-        self.data.qpos[7:] = self.default_joint_pos + noise
+        # B1: start from the standing keyframe, not qpos0.
+        mujoco.mj_resetDataKeyframe(self.model, self.data, self._home_key_id)
+
+        # B8: randomise the whole initial condition, not just joint angles. A
+        # policy trained from a single start state has never seen the states it
+        # will actually visit after a stumble, so it cannot recover from one.
+        n = self.reset_noise_scale
+        self.data.qpos[7:] += self.np_random.uniform(-n, n, size=self.n_joints)
+        self.data.qpos[2] += self.np_random.uniform(-0.02, 0.05)
+        yaw = self.np_random.uniform(-np.pi, np.pi)
+        roll_pitch = self.np_random.uniform(-0.05, 0.05, size=2)
+        self.data.qpos[3:7] = self._euler_to_quat(roll_pitch[0], roll_pitch[1], yaw)
+        self.data.qvel[0:3] = self.np_random.uniform(-0.3, 0.3, size=3)
+        self.data.qvel[3:6] = self.np_random.uniform(-0.3, 0.3, size=3)
+        self.data.qvel[6:] = self.np_random.uniform(-0.5, 0.5, size=self.n_joints)
+        self.data.xfrc_applied[:] = 0.0
 
         self._randomize_domain()
         mujoco.mj_forward(self.model, self.data)
+        self._refresh_frame_cache()
 
-        self.prev_action = np.zeros(self.n_actuators, dtype=np.float32)
-        self._current_action = np.zeros(self.n_actuators, dtype=np.float32)
-        self._reward_components = {}
+        self.command = self.command_sampler.sample(self.np_random)
+        self._apply_gait(self.command.gait)
+        # Random initial phase: otherwise every episode starts on the same foot
+        # and the policy can key off the episode timer instead of the clock.
+        self.gait_phase = float(self.np_random.uniform(0.0, 1.0))
+
         self.step_count = 0
+        self.prev_action[:] = 0.0
+        self._current_action[:] = 0.0
+        self._prev_joint_vel[:] = self.data.qvel[6:]
+        self._last_torques[:] = 0.0
+        self._feet_air_time[:] = 0.0
+        self._last_contact[:] = 0.0
+        self._time_since_command = 0.0
+        self._reward_terms = {}
+        self._tracking_scores.clear()
+        self._schedule_push()
 
         return self._get_obs(), {}
 
     def step(self, action):
+        action = np.clip(np.asarray(action, dtype=np.float64), -1.0, 1.0)
         self._current_action = action.copy()
 
-        # PD position control: action sets target joint positions
         target_pos = self.default_joint_pos + action * self.action_scale
-        current_pos = self.data.qpos[7:]
-        current_vel = self.data.qvel[6:]
-        torques = self.kp * (target_pos - current_pos) - self.kd * current_vel
-        # Clip to actuator limits
-        ctrl_max = self.model.actuator_ctrlrange[:, 1]
-        self.data.ctrl[:] = np.clip(torques, -ctrl_max, ctrl_max)
+        kp = self.kp * self._kp_scale
+        kd = self.kd * self._kd_scale
 
-        # Apply occasional external push
-        self._apply_external_push()
+        self._update_push()
 
-        # Step simulation
-        for _ in range(self.frame_skip):
+        # B6: recompute the PD torque every physics substep. Holding one torque
+        # for the whole control period turns the D term into an open-loop
+        # constant and is the main source of v1's visible judder.
+        for _ in range(self.decimation):
+            torque = kp * (target_pos - self.data.qpos[7:]) - kd * self.data.qvel[6:]
+            torque = np.clip(torque, -self.torque_limits, self.torque_limits)
+            self.data.ctrl[:] = torque
             mujoco.mj_step(self.model, self.data)
+        self._last_torques = torque
+        self._refresh_frame_cache()
 
         self.step_count += 1
+        self._time_since_command += self.dt
 
-        obs = self._get_obs()
-        reward = self._compute_reward()
-        terminated = self._check_termination()
+        # Advance the gait clock before scoring, so the schedule the reward
+        # checks is the one the policy saw in its observation last step.
+        self.gait_phase = gait_mod.advance_phase(
+            self.gait_phase, self.command.gait_frequency, self.dt
+        )
+
+        contacts, undesired, trunk_touching = self._contact_state()
+        first_contact = ((contacts > 0.5) & (self._last_contact < 0.5)).astype(float)
+        air_time_at_landing = self._feet_air_time * first_contact
+        self._feet_air_time = np.where(contacts > 0.5, 0.0, self._feet_air_time + self.dt)
+        self._last_contact = contacts
+
+        state = self._build_reward_state(
+            contacts, undesired, first_contact, air_time_at_landing
+        )
+        raw_reward, terms = reward_mod.compute(state, self.reward_weights)
+        reward = float(raw_reward) * self.dt
+        self._reward_terms = {k: float(v) * self.dt for k, v in terms.items()}
+
+        terminated = self._check_termination(trunk_touching)
         truncated = self.step_count >= self.max_episode_steps
 
-        info = {
-            "x_position": self.data.qpos[0],
-            "x_velocity": self.data.qvel[0],
-            "y_velocity": self.data.qvel[1],
-            "body_height": self.data.qpos[2],
-            **self._reward_components,
-        }
+        if self.command_sampler.should_resample(self._time_since_command):
+            self.command = self.command_sampler.sample(self.np_random)
+            self._apply_gait(self.command.gait)
+            self._time_since_command = 0.0
 
+        self._prev_joint_vel[:] = self.data.qvel[6:]
         self.prev_action = action.copy()
+        obs = self._get_obs()
+
+        info = self._build_info(state, contacts)
 
         if self.render_mode == "human":
             self.render()
-
         return obs, reward, terminated, truncated, info
+
+    def _build_info(self, state, contacts):
+        """Diagnostics. Keys prefixed ``rew/`` are picked up by the logger."""
+        lin_err = float(np.linalg.norm(state.cmd[:2] - state.lin_vel_b[:2]))
+        ang_err = float(abs(state.cmd[2] - state.ang_vel_b[2]))
+        info = {
+            "x_position": float(self.data.qpos[0]),
+            "base_height": float(self.data.qpos[2]),
+            "lin_vel_b": state.lin_vel_b.copy(),
+            "ang_vel_b": state.ang_vel_b.copy(),
+            "cmd": state.cmd.copy(),
+            "gait": self.command.gait,
+            "gait_phase": self.gait_phase,
+            "contacts": contacts.copy(),
+            "tracking_lin_err": lin_err,
+            "tracking_ang_err": ang_err,
+            # Normalised in [0, 1]; this is the signal the adaptive curriculum
+            # closes its loop on.
+            "tracking_score": float(
+                np.exp(-lin_err ** 2 / self.lin_vel_sigma) * 0.5
+                + np.exp(-ang_err ** 2 / self.ang_vel_sigma) * 0.5
+            ),
+        }
+        self._tracking_scores.append(info["tracking_score"])
+        for k, v in self._reward_terms.items():
+            info["rew/" + k] = v
+        return info
+
+    def _check_termination(self, trunk_touching):
+        if trunk_touching:
+            return True
+        if self.data.qpos[2] < self.min_base_height:
+            return True
+        # Attitude check via projected gravity: upright means the z component is
+        # -1. No trig, no gimbal edge cases, no yaw dependence.
+        gz = self._projected_gravity()[2]
+        return bool(gz > -np.cos(self.max_pitch_roll))
+
+    @staticmethod
+    def _euler_to_quat(roll, pitch, yaw):
+        cr, sr = np.cos(roll * 0.5), np.sin(roll * 0.5)
+        cp, sp = np.cos(pitch * 0.5), np.sin(pitch * 0.5)
+        cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
+        return np.array([
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ])
+
+    # ------------------------------------------------------------------ #
+    #  Rendering (B9)                                                     #
+    # ------------------------------------------------------------------ #
 
     def render(self):
         if self.render_mode == "human":
             if self._viewer is None:
                 self._viewer = mujoco.viewer.launch_passive(self.model, self.data)
             self._viewer.sync()
-        elif self.render_mode == "rgb_array":
-            renderer = mujoco.Renderer(self.model, height=480, width=640)
-            # Camera tracks the robot body
-            camera = mujoco.MjvCamera()
-            camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-            camera.trackbodyid = 1  # Main body
-            camera.distance = 2.0
-            camera.azimuth = 135
-            camera.elevation = -20
-            renderer.update_scene(self.data, camera=camera)
-            img = renderer.render()
-            renderer.close()
-            return img
+            return None
+        if self.render_mode == "rgb_array":
+            if self._renderer is None:
+                w, h = self.render_size
+                self._renderer = mujoco.Renderer(self.model, height=h, width=w)
+                self._camera = mujoco.MjvCamera()
+                self._camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                self._camera.trackbodyid = self.base_body_id
+                self._camera.distance = 2.0
+                self._camera.azimuth = 135
+                self._camera.elevation = -20
+            self._renderer.update_scene(self.data, camera=self._camera)
+            return self._renderer.render()
+        return None
 
     def close(self):
         if self._viewer is not None:
             self._viewer.close()
             self._viewer = None
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None

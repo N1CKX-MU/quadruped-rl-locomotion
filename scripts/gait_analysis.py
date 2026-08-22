@@ -1,12 +1,30 @@
-"""Analyze the emergent gait pattern of a trained policy.
+"""Measure the gait a trained policy actually produces, and compare it to the
+gait it was commanded.
 
-Records foot contact patterns over one episode and generates a gait
-diagram showing which feet are on the ground at each timestep. Also
-computes gait metrics: stride frequency, duty factor, and phase offsets.
+    python scripts/gait_analysis.py                       # trot, 1.0 m/s
+    python scripts/gait_analysis.py --gait pace --cmd 0.8 0 0
+    python scripts/gait_analysis.py --all-gaits           # one figure per gait
+
+In v1 the gait was whatever fell out of the optimiser, so "gait analysis" meant
+describing an emergent pattern after the fact. In v2 the gait is *commanded*
+through a phase schedule, which turns this script into a proper measurement:
+the reference schedule and the achieved contacts can be plotted on the same
+axes, and the error between them is a number.
+
+What is measured
+    duty factor      fraction of the stride each foot spends loaded
+    stride frequency touchdowns per second, per foot
+    phase offset     each foot's touchdown time relative to FL, in cycles
+    schedule match   fraction of control steps where actual contact equals the
+                     commanded schedule; this is exactly the gait_phase reward
+
+Reference offsets: trot (0, .5, .5, 0), pace (0, .5, 0, .5),
+bound (0, 0, .5, .5), walk (0, .5, .25, .75).
 """
 
 import argparse
 import os
+import pickle
 import sys
 
 import numpy as np
@@ -17,182 +35,252 @@ try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
     HAS_MPL = True
-except ImportError:
+except ImportError:  # pragma: no cover - plotting is optional
     HAS_MPL = False
 
-from stable_baselines3 import PPO, SAC, TD3
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from envs.go2_env import Go2Env
+from envs.gait import FOOT_ORDER, GAIT_NAMES, desired_contact, gait_params  # noqa: E402
+from envs.go2_env import Go2Env  # noqa: E402
 
-
-FOOT_NAMES = ["FL (Front Left)", "FR (Front Right)", "RL (Rear Left)", "RR (Rear Right)"]
+FOOT_LABELS = ["FL (front left)", "FR (front right)",
+               "RL (rear left)", "RR (rear right)"]
 FOOT_COLORS = ["#2196F3", "#FF9800", "#4CAF50", "#E91E63"]
 
 
-def compute_gait_metrics(contacts, dt):
-    """Compute gait metrics from contact data."""
-    n_steps, n_feet = contacts.shape
-    total_time = n_steps * dt
-
-    metrics = {}
-    for i, name in enumerate(FOOT_NAMES):
-        foot = contacts[:, i]
-        duty_factor = np.mean(foot)
-
-        # Find stride periods (time between consecutive touch-downs)
-        touch_downs = np.where(np.diff(foot) > 0)[0]
-        if len(touch_downs) >= 2:
-            stride_periods = np.diff(touch_downs) * dt
-            stride_freq = 1.0 / np.mean(stride_periods)
-        else:
-            stride_freq = 0.0
-
-        metrics[name] = {
-            "duty_factor": duty_factor,
-            "stride_freq": stride_freq,
-        }
-
-    # Phase offsets relative to FL
-    fl_touchdowns = np.where(np.diff(contacts[:, 0]) > 0)[0]
-    if len(fl_touchdowns) >= 2:
-        fl_period = np.mean(np.diff(fl_touchdowns))
-        for i in range(1, n_feet):
-            other_touchdowns = np.where(np.diff(contacts[:, i]) > 0)[0]
-            if len(other_touchdowns) > 0 and fl_period > 0:
-                # Find closest touchdown to first FL touchdown
-                diffs = other_touchdowns - fl_touchdowns[0]
-                closest = diffs[np.argmin(np.abs(diffs))]
-                phase = (closest / fl_period) % 1.0
-                metrics[FOOT_NAMES[i]]["phase_offset"] = phase
-            else:
-                metrics[FOOT_NAMES[i]]["phase_offset"] = 0.0
-        metrics[FOOT_NAMES[0]]["phase_offset"] = 0.0
-    else:
-        for name in FOOT_NAMES:
-            metrics[name]["phase_offset"] = 0.0
-
-    return metrics
+# --------------------------------------------------------------------------- #
+#  Measurement                                                                #
+# --------------------------------------------------------------------------- #
 
 
-def plot_gait_diagram(contacts, dt, metrics, output_path):
-    """Plot a gait diagram showing foot contact patterns."""
-    n_steps = contacts.shape[0]
-    time = np.arange(n_steps) * dt
+def duty_factors(contacts):
+    """Fraction of the recorded window each foot spent loaded."""
+    return contacts.mean(axis=0)
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 5), sharex=True)
-    fig.suptitle("Gait Diagram — Foot Contact Patterns", fontsize=14, fontweight="bold")
 
-    for i, (ax, name, color) in enumerate(zip(axes, FOOT_NAMES, FOOT_COLORS)):
-        foot = contacts[:, i]
+def touchdown_indices(foot_contacts):
+    """Indices where a foot transitions from swing to stance."""
+    return np.where(np.diff(foot_contacts.astype(int)) > 0)[0] + 1
 
-        # Draw contact bars
-        in_contact = False
-        start = 0
-        for t in range(n_steps):
-            if foot[t] > 0.5 and not in_contact:
-                start = t
-                in_contact = True
-            elif foot[t] < 0.5 and in_contact:
-                ax.axvspan(time[start], time[t], alpha=0.7, color=color)
-                in_contact = False
-        if in_contact:
-            ax.axvspan(time[start], time[-1], alpha=0.7, color=color)
 
-        m = metrics[name]
-        label = f"{name}  |  duty={m['duty_factor']:.0%}  freq={m['stride_freq']:.1f}Hz  phase={m['phase_offset']:.2f}"
-        ax.set_ylabel("")
-        ax.set_yticks([])
-        ax.text(0.01, 0.5, label, transform=ax.transAxes, fontsize=9,
-                verticalalignment="center", fontfamily="monospace")
-        ax.set_xlim(time[0], time[-1])
+def stride_frequencies(contacts, dt):
+    """Touchdowns per second, per foot. Zero if fewer than two touchdowns."""
+    out = np.zeros(contacts.shape[1])
+    for i in range(contacts.shape[1]):
+        td = touchdown_indices(contacts[:, i])
+        if len(td) >= 2:
+            out[i] = 1.0 / (np.mean(np.diff(td)) * dt)
+    return out
 
-    axes[-1].set_xlabel("Time (s)")
 
-    # Identify gait type
-    phases = [metrics[name]["phase_offset"] for name in FOOT_NAMES]
-    fr_phase = phases[1]
-    rl_phase = phases[2]
-    rr_phase = phases[3]
+def phase_offsets(contacts, dt):
+    """Each foot's touchdown phase relative to FL, in cycles [0, 1).
 
-    gait_type = "Unknown"
-    if abs(fr_phase - 0.5) < 0.15 and abs(rr_phase - 0.5) < 0.15:
-        gait_type = "Trot (diagonal pairs alternate)"
-    elif abs(fr_phase - 0.5) < 0.15 and abs(rl_phase - 0.5) < 0.15:
-        gait_type = "Pace (lateral pairs alternate)"
-    elif abs(rr_phase - 0.25) < 0.15:
-        gait_type = "Walk (sequential)"
-    elif all(p < 0.1 or p > 0.9 for p in phases):
-        gait_type = "Bound (front/rear pairs)"
+    Computed from the *median* offset over all FL cycles rather than the first
+    one, so a single missed step does not move the answer.
+    """
+    fl = touchdown_indices(contacts[:, 0])
+    if len(fl) < 2:
+        return np.full(contacts.shape[1], np.nan)
+    period = float(np.mean(np.diff(fl)))
+    offsets = np.zeros(contacts.shape[1])
+    for i in range(contacts.shape[1]):
+        td = touchdown_indices(contacts[:, i])
+        if len(td) == 0:
+            offsets[i] = np.nan
+            continue
+        rel = []
+        for t in fl[:-1]:
+            following = td[td >= t]
+            if len(following):
+                rel.append(((following[0] - t) % period) / period)
+        offsets[i] = float(np.median(rel)) if rel else np.nan
+    return offsets
 
-    fig.text(0.5, 0.01, f"Detected gait: {gait_type}", ha="center", fontsize=11,
-             fontstyle="italic", color="#333")
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.96])
-    plt.savefig(output_path, dpi=150, bbox_inches="tight")
-    print(f"Gait diagram saved to {output_path}")
-    return gait_type
+def schedule_match(contacts, phases, gait):
+    """Fraction of steps where the actual contact matched the commanded one.
+
+    This is numerically the same quantity as the ``gait_phase`` reward term, so
+    a policy scoring 0.95 here is collecting 95% of that term's value.
+    """
+    offsets, duty = gait_params(gait)
+    desired = np.array([desired_contact(p, offsets, duty) for p in phases])
+    return float(np.mean(contacts == desired)), desired
+
+
+# --------------------------------------------------------------------------- #
+#  Rollout                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def load_policy(model_path, vecnormalize_path, device="cpu"):
+    from stable_baselines3 import PPO
+
+    model = PPO.load(model_path, device=device)
+    obs_rms, clip_obs, eps = None, 10.0, 1e-8
+    if vecnormalize_path and os.path.exists(vecnormalize_path):
+        with open(vecnormalize_path, "rb") as f:
+            vec = pickle.load(f)
+        obs_rms, clip_obs, eps = vec.obs_rms, vec.clip_obs, vec.epsilon
+
+    def predict(obs):
+        x = obs
+        if obs_rms is not None:
+            x = np.clip((obs - obs_rms.mean) / np.sqrt(obs_rms.var + eps),
+                        -clip_obs, clip_obs).astype(np.float32)
+        a, _ = model.predict(x, deterministic=True)
+        return a
+
+    return predict
+
+
+def record(env, predict, command, gait, frequency, steps, settle=100, seed=0):
+    obs, _ = env.reset(seed=seed)
+    env.set_command(lin_vel_x=command[0], lin_vel_y=command[1],
+                    ang_vel_yaw=command[2], gait=gait, gait_frequency=frequency)
+
+    contacts, phases, vels = [], [], []
+    for i in range(steps + settle):
+        action = predict(obs)
+        obs, _, terminated, _, info = env.step(action)
+        if i >= settle:
+            contacts.append(info["contacts"])
+            phases.append(info["gait_phase"])
+            vels.append(info["lin_vel_b"][:2])
+        if terminated:
+            break
+    return np.array(contacts), np.array(phases), np.array(vels)
+
+
+# --------------------------------------------------------------------------- #
+#  Reporting                                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def report(contacts, phases, vels, gait, dt, command):
+    if len(contacts) < 10:
+        print("The robot fell before enough data was collected.")
+        return None
+
+    duty = duty_factors(contacts)
+    freq = stride_frequencies(contacts, dt)
+    offsets = phase_offsets(contacts, dt)
+    match, desired = schedule_match(contacts, phases, gait)
+    ref_offsets, ref_duty = gait_params(gait)
+
+    print("\ncommanded gait      : %s (reference offsets %s, duty %.2f)"
+          % (gait, tuple(ref_offsets), ref_duty))
+    print("commanded velocity  : vx=%.2f vy=%.2f yaw=%.2f"
+          % (command[0], command[1], command[2]))
+    print("achieved velocity   : vx=%.3f vy=%.3f"
+          % (vels[:, 0].mean(), vels[:, 1].mean()))
+    print("schedule match      : %.1f%%  (the gait_phase reward, as a percentage)"
+          % (100 * match))
+    print()
+    print("%-20s %10s %10s %12s %12s" % ("foot", "duty", "stride Hz",
+                                         "phase (meas)", "phase (ref)"))
+    print("-" * 68)
+    for i, label in enumerate(FOOT_LABELS):
+        print("%-20s %10.3f %10.2f %12s %12.2f"
+              % (label, duty[i], freq[i],
+                 "nan" if np.isnan(offsets[i]) else "%.2f" % offsets[i],
+                 ref_offsets[i]))
+    print("-" * 68)
+    print("mean duty factor    : %.3f   (reference %.2f)" % (duty.mean(), ref_duty))
+    print("mean stride freq    : %.2f Hz" % freq.mean())
+
+    # The interpretation the numbers are actually for.
+    notes = []
+    if duty.mean() > ref_duty + 0.15:
+        notes.append("Feet stay down longer than commanded: the policy is "
+                     "shuffling rather than swinging. Raise feet_air_time.")
+    if match < 0.7:
+        notes.append("Poor schedule match: either gait_phase's weight is too "
+                     "low, or the commanded frequency is outside what the "
+                     "policy was trained on.")
+    if np.nanmax(np.abs(offsets - ref_offsets)) > 0.2:
+        notes.append("Measured phase offsets do not match the reference: the "
+                     "policy is running a different gait from the one asked for.")
+    if notes:
+        print("\nnotes:")
+        for n in notes:
+            print("  - " + n)
+
+    return dict(duty=duty, freq=freq, offsets=offsets, match=match,
+                desired=desired)
+
+
+def plot(contacts, desired, dt, gait, path):
+    if not HAS_MPL:
+        print("matplotlib is not installed; skipping the figure.")
+        return
+    n = len(contacts)
+    t = np.arange(n) * dt
+    fig, axes = plt.subplots(2, 1, figsize=(12, 5), sharex=True)
+
+    for ax, data, title in (
+        (axes[0], desired, "commanded schedule"),
+        (axes[1], contacts, "measured contacts"),
+    ):
+        for i in range(4):
+            on = data[:, i] > 0.5
+            ax.fill_between(t, i - 0.4, i + 0.4, where=on,
+                            color=FOOT_COLORS[i], step="mid", linewidth=0)
+        ax.set_yticks(range(4))
+        ax.set_yticklabels(FOOT_ORDER)
+        ax.set_ylim(-0.6, 3.6)
+        ax.set_title(title, loc="left", fontsize=10)
+        ax.grid(axis="x", alpha=0.25)
+
+    axes[1].set_xlabel("time (s)")
+    fig.suptitle("Gait diagram - %s" % gait, fontsize=12)
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+    print("wrote " + path)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze gait pattern")
-    parser.add_argument("--model", type=str, default="models/go2_ppo_final.zip")
-    parser.add_argument("--vec-normalize", type=str, default="models/vecnormalize_final.pkl")
-    parser.add_argument("--output", type=str, default="assets/gait_analysis.png")
-    parser.add_argument("--steps", type=int, default=500)
-    parser.add_argument("--cmd-vel", type=float, nargs=3, default=[0.8, 0.0, 0.0])
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--model", default="models/go2_ppo_final.zip")
+    p.add_argument("--vec-normalize", default=None)
+    p.add_argument("--xml", default="mujoco_menagerie/unitree_go2/scene.xml")
+    p.add_argument("--gait", default="trot", choices=list(GAIT_NAMES))
+    p.add_argument("--all-gaits", action="store_true")
+    p.add_argument("--cmd", type=float, nargs=3, default=[1.0, 0.0, 0.0])
+    p.add_argument("--frequency", type=float, default=2.0)
+    p.add_argument("--steps", type=int, default=300)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out-dir", default="assets")
+    args = p.parse_args()
 
-    if not HAS_MPL:
-        print("matplotlib not installed. Install with: pip install matplotlib")
-        return
+    vecnorm = args.vec_normalize
+    if vecnorm is None:
+        for guess in ("models/go2_ppo_vecnormalize.pkl",
+                      "models/vecnormalize_final.pkl"):
+            if os.path.exists(guess):
+                vecnorm = guess
+                break
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    predict = load_policy(args.model, vecnorm)
+    env = Go2Env(xml_path=args.xml, randomize_dynamics=False, push_enabled=False,
+                 command_resample_interval_s=0.0,
+                 max_episode_steps=args.steps + 200)
+    os.makedirs(args.out_dir, exist_ok=True)
 
-    raw_env = Go2Env(cmd_vel=tuple(args.cmd_vel))
-    env = DummyVecEnv([lambda: raw_env])
-    if os.path.exists(args.vec_normalize):
-        env = VecNormalize.load(args.vec_normalize, env)
-        env.training = False
-        env.norm_reward = False
-
-    algo_map = {"ppo": PPO, "sac": SAC, "td3": TD3}
-    algo_cls = PPO
-    for name, cls in algo_map.items():
-        if name in args.model.lower():
-            algo_cls = cls
-            break
-    model = algo_cls.load(args.model)
-
-    # Collect contact data
-    all_contacts = []
-    obs = env.reset()
-    for _ in range(args.steps):
-        action, _ = model.predict(obs, deterministic=True)
-        obs, _, done, _ = env.step(action)
-        contacts = raw_env._get_foot_contacts()
-        all_contacts.append(contacts)
-        if done[0]:
-            obs = env.reset()
-
-    contacts = np.array(all_contacts)
-    dt = raw_env.dt
-
-    # Compute and print metrics
-    metrics = compute_gait_metrics(contacts, dt)
-    print("\nGait Metrics:")
-    print(f"{'Foot':<25} {'Duty Factor':>12} {'Stride Freq':>12} {'Phase':>8}")
-    print("-" * 60)
-    for name in FOOT_NAMES:
-        m = metrics[name]
-        print(f"{name:<25} {m['duty_factor']:>11.0%} {m['stride_freq']:>10.1f} Hz {m['phase_offset']:>7.2f}")
-
-    # Plot
-    gait_type = plot_gait_diagram(contacts, dt, metrics, args.output)
-    print(f"\nDetected gait: {gait_type}")
-
-    env.close()
+    gaits = [g for g in GAIT_NAMES if g != "stand"] if args.all_gaits else [args.gait]
+    try:
+        for gait in gaits:
+            contacts, phases, vels = record(
+                env, predict, args.cmd, gait, args.frequency, args.steps,
+                seed=args.seed
+            )
+            result = report(contacts, phases, vels, gait, env.dt, args.cmd)
+            if result is not None:
+                plot(contacts, result["desired"], env.dt, gait,
+                     os.path.join(args.out_dir, "gait_%s.png" % gait))
+    finally:
+        env.close()
 
 
 if __name__ == "__main__":

@@ -1,395 +1,281 @@
-<div align="center">
+# Quadruped RL Locomotion — Unitree Go2
 
-# RL-Based Quadruped Locomotion
+Command-conditioned locomotion for the Unitree Go2 in MuJoCo, trained with PPO.
+The robot walks forwards, backwards and sideways, turns on the spot, holds a
+commanded body height, and follows a commandable gait schedule — trot, pace,
+bound or walk — at a commandable step frequency.
 
-**Training a Unitree Go2 quadruped to walk using reinforcement learning in MuJoCo**
-
-![Go2 Walking](assets/go2_walking.gif)
-
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![MuJoCo](https://img.shields.io/badge/MuJoCo-3.0+-green.svg)](https://mujoco.org/)
-[![SB3](https://img.shields.io/badge/Stable--Baselines3-2.9+-orange.svg)](https://github.com/DLR-RM/stable-baselines3)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-
-*A 12-DoF quadruped learns forward locomotion from scratch via PPO, achieving 0.74 m/s in simulation*
-
-</div>
-
----
-
-## Highlights
-
-- **Custom Gymnasium environment** with an 8-term reward function for natural gait emergence
-- **PD position controller** on top of torque actuators — matching the industry-standard sim-to-real pipeline (IsaacGym, legged_gym, ETH ANYmal)
-- **Curriculum learning** that ramps velocity targets from 0.3 to 0.8 m/s
-- **Algorithm comparison** across PPO, SAC, and TD3 with analysis of why PPO dominates for locomotion
-- **5 iterative training runs** documented with failure analysis — not just final results
-
-## Results
-
-<table>
-<tr>
-<td>
-
-**Evaluation over 50 episodes (5M steps PPO)**
-
-| Metric | Value |
-|:---|:---|
-| Mean forward speed | **0.737 m/s** |
-| Target speed | 0.800 m/s |
-| Peak episode speed | 0.874 m/s |
-| Mean episode length | 277 steps (11.1s) |
-| Control frequency | 25 Hz |
-| Training time | 1h 50m (8 parallel envs) |
-
-</td>
-<td>
-
-**Algorithm comparison (1M steps each)**
-
-| Metric | PPO | SAC | TD3 |
-|:---|:---|:---|:---|
-| Forward speed | **0.14 m/s** | 0.03 m/s | 0.01 m/s |
-| Ep. length | 264 | 244 | **440** |
-| Survival | 0% | 0% | **10%** |
-| Behavior | Walks | Stands | Stands |
-
-</td>
-</tr>
-</table>
-
-> **Why PPO wins:** On-policy rollouts (2048 steps x 8 envs = 16k samples per update) provide the exploration needed to discover walking gaits. Off-policy methods (SAC, TD3) fill their replay buffers with early falling experiences, converging to stable-but-stationary policies.
-
----
-
-## Architecture
-
-The policy outputs joint position targets, not raw torques. A PD controller converts these to torques — this is the same architecture used for real-world deployment on physical quadrupeds.
-
-```
-                    ┌─────────────────────────────────────────────┐
-                    │              RL Control Loop                │
-                    │                                             │
- ┌──────────┐      │  ┌────────────┐     ┌──────────────────┐    │
- │ Command  │──────┼─▶│            │     │                  │    │
- │ Velocity │      │  │ Observation│────▶│   MLP [256,256]  │    │
- │ (vx,vy,w)│      │  │  (53-dim)  │     │      (PPO)       │    │
- └──────────┘      │  │            │     │                  │    │
-                    │  └────────────┘     └────────┬─────────┘    │
- ┌──────────┐      │        ▲                     │              │
- │  MuJoCo  │──────┼────────┘                     ▼              │
- │ Physics  │      │                     ┌──────────────────┐    │
- │          │◀─────┼─────────────────────│  PD Controller   │    │
- │ 500 Hz   │      │     torques         │ τ = Kp(q*-q)-Kd·q̇│    │
- └──────────┘      │                     │  Kp=40  Kd=1     │    │
-                    │                     └──────────────────┘    │
-                    └─────────────────────────────────────────────┘
-                              Control at 25 Hz (frame_skip=20)
-```
-
-### Observation Space (53 dimensions)
-
-| Component | Dims | Description |
-|:---|:---:|:---|
-| Base orientation | 4 | Quaternion from `qpos[3:7]` |
-| Base angular velocity | 3 | Roll, pitch, yaw rates |
-| Base linear velocity | 3 | Forward, lateral, vertical speed |
-| Joint positions | 12 | 4 legs x 3 joints (hip, thigh, calf) |
-| Joint velocities | 12 | Angular velocity of each joint |
-| Previous actions | 12 | Last commanded position targets |
-| Foot contacts | 4 | Binary ground contact per foot |
-| Command velocity | 3 | Target (vx, vy, yaw_rate) |
-
-> **Design choice:** Absolute x/y position is excluded so the policy is position-invariant — it behaves the same whether the robot is at the origin or 100m away.
-
-### Action Space (12 dimensions)
-
-Each action is a position offset from the default standing pose:
-
-```
-target_position = default_standing_pose + action * 0.5 rad
-torque = Kp * (target - current_pos) - Kd * current_vel
-```
-
-Actions are normalized to [-1, 1]. The 0.5 rad scale allows ~28 degrees of joint movement per step.
-
-### Reward Function
-
-The reward balances velocity tracking against stability and efficiency:
-
-```python
-reward = (
-    # --- Drive forward ---
-    + 2.0 * exp(-vel_error² / 0.25)     # Track commanded velocity
-    + 0.5 * exp(-yaw_error² / 0.25)     # Track commanded yaw rate
-    + 0.5                                # Alive bonus (survival)
-    # --- Stay stable ---
-    - 0.5 * |lateral_vel|               # Don't crab-walk
-    - 1.0 * orientation_error²          # Stay upright (projected gravity)
-    # --- Move efficiently ---
-    - 0.01 * |action_change|²           # Smooth motions
-    - 0.0001 * |torques|²              # Energy efficiency
-    # --- Walk naturally ---
-    + 0.1 * gait_regularity             # Encourage diagonal trot
-)
-```
-
-The velocity tracking term uses an exponential kernel: the agent gets near-zero reward when stationary, and full reward when matching the commanded speed. The alive bonus is kept deliberately small (0.5) so it doesn't dominate — this was a key lesson from failed early runs.
-
----
-
-## Training Progression
-
-Getting a quadruped to walk is not plug-and-play. This section documents the iteration process, including failures:
-
-| Run | Steps | What Changed | Forward Speed | What Happened |
-|:---:|:---:|:---|:---:|:---|
-| 1 | 2M | Baseline reward | 0.00 m/s | Robot stands still — alive bonus (0.5/step) is more rewarding than attempting to walk |
-| 2 | 2M | Increased velocity weight, reduced alive bonus | 0.00 m/s | Exponential reward is too flat — standing vs slow walking both score ~0.1 |
-| 3 | 2M | Switched to linear velocity reward | 0.00 m/s | Robot falls immediately — sending position values to torque actuators produces near-zero force |
-| 4 | 2M | **Added PD controller** | **0.25 m/s** | First successful locomotion! PD converts position targets to proper torques |
-| 5 | 5M | Slower curriculum (1M warmup), more training | **0.74 m/s** | Stable walking gait at 92% of target speed |
-
-### Training Curves
-
-![Training Curves](assets/training_curves.png)
-
-### Key Insights
-
-1. **Actuator type matters.** The Go2 MJCF defines torque actuators (±23.7 Nm). The RL policy should output position targets, not raw torques — a PD controller bridges the gap. This is standard in every serious quadruped RL framework.
-
-2. **Reward shaping is iterative.** The alive bonus must be small enough that the agent is incentivized to move, but large enough that it doesn't learn to run and crash. Three of five runs failed due to reward imbalance.
-
-3. **Curriculum learning is critical.** Starting with a low velocity target (0.3 m/s) lets the policy learn balance before attempting fast locomotion. Without curriculum, the agent either learns to stand (safe) or fall (fast).
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.10+
-- MuJoCo 3.0+
-- CUDA GPU (optional, PPO trains well on CPU)
-
-### Installation
+There is a **book** in [`docs/`](docs/README.md) that derives all of this from
+scratch: the maths of reinforcement learning, the algorithm line by line, the
+robot, the reward design, and a debugging log of every defect found on the way.
 
 ```bash
 git clone https://github.com/N1CKX-MU/quadruped-rl-locomotion.git
 cd quadruped-rl-locomotion
-
-# Creates venv, installs dependencies, downloads Go2 model
 make setup
-
-# Verify everything works
-make verify
+make check          # 10-second sanity check; run this before training
+make train
+make play           # drive it yourself: WASD, Q/E, 1-5 for gaits
 ```
 
-### Quick Start
+---
+
+## What changed in v2
+
+v1 trained a policy that walked forwards at 0.74 m/s and could do nothing else.
+That was not a tuning limit. It was the sum of sixteen specific defects, none of
+which produced an error message, all of which survived five documented training
+runs. Two more (B17, B18) were found in v2 and are listed alongside them.
+
+The headline one:
+
+> **v1's "default standing pose" placed all four calf joints outside their own
+> travel limits.** The pose was taken from `qpos0` (all joints at 0 rad) rather
+> than the model's `home` keyframe. The Go2's calf range is
+> $[-2.723, -0.838]$ rad — it does not contain zero. With an action scale of
+> 0.5 rad, the policy's entire reachable target set was $[-0.5, +0.5]$, which
+> does not intersect the joint's legal range at all. Every episode began in an
+> illegal configuration, and for every action the policy could emit, the
+> commanded knee angle was physically unreachable.
+
+The full list is [`docs/14-debugging-log.md`](docs/14-debugging-log.md). Summary:
+
+| # | Bug | Impact |
+|---|---|---|
+| B1 | Nominal pose outside the joint limits | **Defined v1's ceiling** |
+| B2 | Velocity tracked in the world frame, not the body frame | Turning incoherent |
+| B3 | Reward could only express forward motion | Forward-only gait |
+| B4 | Gait reward maximised by a robot standing perfectly still | No gait signal |
+| B5 | Curriculum made 8 blocking IPC round trips per environment step | Throughput loss |
+| B6 | PD torque held constant for 40 ms | Judder |
+| B7 | 25 Hz control | Judder; halved the planning horizon |
+| B8 | Every episode started from one initial condition | Brittle |
+| B9 | A new OpenGL context per rendered frame | Slow rendering |
+| B10 | Contact detector counted foot-on-shin self-contacts | Wrong gait signal |
+| B11 | Pushes fired on an exactly periodic schedule, teleporting momentum | Memorisable |
+| B12 | Resuming training silently discarded the normalisation statistics | **Silent policy destruction** |
+| B13 | Eval environment kept updating its own normalisation | Noisy eval curve |
+| B14 | 2560 gradient steps per PPO rollout | Instability and waste |
+| B15 | Observation docstring said 49; the space was 53 | Indicator |
+| B16 | `mujoco.viewer` used without being imported | `render("human")` crashed |
+| B17 | Swing clearance too marginal to lift a foot (found in v2) | No gait |
+| B18 | Stepping reward was piecewise constant, so its gradient was zero (v2) | No gradient toward stepping |
+
+Four things were checked and found **not** to be bugs — the quaternion helper,
+the torque units, the timeout bootstrapping, and the PD gains. Those are
+recorded too, because a debugging log that lists only confirmed problems
+misrepresents how the work goes.
+
+### New capability
+
+| | v1 | v2 |
+|---|---|---|
+| Commands | one fixed forward speed | $(v_x, v_y, \omega_z)$, resampled every 5 s |
+| Directions | forward | forward, backward, strafe, turn, and combinations |
+| Gait | emergent, uncontrollable | commanded: trot / pace / bound / walk / pronk / stand |
+| Step frequency | — | commandable, 1.5–3.0 Hz |
+| Body height | — | commandable, 0.27–0.34 m |
+| Curriculum | open-loop ramp of one scalar | closed-loop over the full command envelope |
+| Control rate | 25 Hz | 50 Hz, with the PD loop at 500 Hz |
+| Reward | 8 terms, inline, unlogged | 17 terms, separate functions, each logged |
+| Tests | none | 67 |
+
+---
+
+## How it works
+
+**Observation** (50 dims): projected gravity, base-frame angular and linear
+velocity, joint positions relative to nominal, joint velocities, previous
+action, the velocity command, and a gait clock $(\sin 2\pi\phi, \cos 2\pi\phi)$.
+Every dimension is justified in
+[`docs/09-observations-and-actions.md`](docs/09-observations-and-actions.md).
+
+**Action** (12 dims): joint position offsets from the Go2's `home` pose, scaled
+by 0.30 rad, tracked by a PD controller ($k_p=55$, $k_d=1.4$) recomputed at
+every 2 ms physics step. This is the same interface the real robot exposes.
+
+**The gait is a clock, not an emergent property.** A scalar phase
+$\phi \in [0,1)$ advances at the commanded step frequency. Each foot has an
+offset $\theta_i$, and the schedule says foot $i$ should be in stance while
+$(\phi + \theta_i) \bmod 1 < \beta$. The reward asks how many feet currently
+match the schedule. Because the schedule is an *input*, one trained policy
+serves every gait — swap the offsets and the trot becomes a pace.
+See [`docs/11-gaits-and-phase.md`](docs/11-gaits-and-phase.md).
+
+**Reward**: seventeen weighted terms, each a pure function in
+[`envs/rewards.py`](envs/rewards.py), each logged separately to TensorBoard, all
+weights in YAML. Full derivation and a worked reward-hacking exploit in
+[`docs/10-reward-engineering.md`](docs/10-reward-engineering.md).
+
+---
+
+## Two PPO implementations
+
+`scripts/train.py` uses Stable-Baselines3. `ppo_from_scratch/` contains an
+annotated ~450-line PPO — rollout buffer, GAE, clipped surrogate, value
+clipping, KL early stop, observation normalisation — that trains the same
+environment. Every block references a numbered equation in the docs.
 
 ```bash
-# Train a policy (5M steps, ~2 hours with 8 parallel envs)
-make train
+make train                                          # SB3
+python ppo_from_scratch/train_scratch.py            # from scratch
+tensorboard --logdir logs/tensorboard               # the curves should agree
+```
 
-# Monitor training in real time
+If the two curves agree, you have verified you understand the algorithm. If they
+diverge, the difference is a specific implementation detail, and finding it
+teaches more than re-reading the paper.
+
+---
+
+## Usage
+
+```bash
+make check                    # sanity-check the environment before training
+make test                     # 67 unit tests
+make train                    # SB3 PPO
+make train-scratch            # the from-scratch implementation
+make resume CKPT=models/checkpoints/go2_ppo_2000000_steps.zip
 make tensorboard
 
-# Evaluate the trained policy (50 episodes, prints metrics table)
-make evaluate
-
-# Watch the robot walk in the MuJoCo viewer
-make evaluate-render
-
-# Record a demo video
-make record
-
-# Compare PPO vs SAC vs TD3
-make compare
+make play                     # drive it by hand
+make evaluate                 # tracking error over random commands
+make evaluate-grid            # tracking error swept along each command axis
+make gait-analysis            # gait diagram, duty factor, phase offsets
+make gait-all                 # one diagram per gait
 ```
 
-### Configuration
+On Windows, pass the venv path explicitly:
 
-All hyperparameters are in `configs/training_config.yaml`:
+```bash
+make PY=venv/Scripts/python.exe check
+```
+
+### Driving it
+
+`make play` opens the MuJoCo viewer with keyboard control:
+
+```
+W / S      forward / backward        1..5   trot, pace, bound, walk, pronk
+A / D      strafe left / right       [ / ]  step frequency down / up
+Q / E      turn left / right         - / =  body height down / up
+SPACE      stop                      R      reset
+```
+
+### Training multiple gaits
 
 ```yaml
-environment:
-  cmd_vel: [0.5, 0.0, 0.0]       # Target velocity [vx, vy, yaw_rate]
-  action_scale: 0.5               # Joint position range (rad)
-  frame_skip: 20                  # 25 Hz control
+commands:
+  gaits: ["trot", "pace", "bound", "walk"]
+```
 
-training:
-  total_timesteps: 5_000_000
-  n_envs: 8
-  learning_rate: 3.0e-4
-  n_steps: 2048
-  batch_size: 64
-  policy_kwargs:
-    net_arch: [256, 256]
+Note the caveat in [`docs/11-gaits-and-phase.md`](docs/11-gaits-and-phase.md)
+§11.8: with more than one gait you must also switch the observation from the
+global clock to the per-foot clock (`clock_signal` in `envs/gait.py`), or the
+policy is being asked to satisfy a schedule it cannot see.
 
-curriculum:
-  enabled: true
-  start_vel: 0.3
-  max_vel: 0.8
-  warmup_steps: 1_000_000
+---
+
+## Measured performance
+
+Development machine: 8 physical cores (12 logical), MuJoCo 3.12, PyTorch CPU.
+
+**Environment throughput**, after profiling:
+
+| | steps/s |
+|---|---|
+| before optimisation | 392 |
+| after replacing `np.cross` and caching the frame conversions | **810** |
+
+`np.cross` on 3-element vectors cost more wall-clock time than the MuJoCo
+physics itself — it is a general $n$-dimensional routine that runs `moveaxis`
+and `normalize_axis_tuple` on every call, and the environment invoked it
+fourteen times per control step.
+
+**End-to-end training throughput:**
+
+| envs | backend | steps/s |
+|---|---|---|
+| 4 | subproc | 382 |
+| 8 | subproc | 533 |
+| 10 | dummy | 290 |
+| 16 | subproc | **616** |
+
+So 10M steps is about 4.5 hours on this machine. For the two-orders-of-magnitude
+speedup and why it is architectural rather than algorithmic, see
+[`docs/17-mjx-and-scaling.md`](docs/17-mjx-and-scaling.md).
+
+**Policy performance** is measured with `make evaluate-grid`, which reports
+tracking error along each command axis rather than a single forward speed. A
+policy that only walks forwards scores well on $v_x$ and badly on $v_y$ and
+$\omega_z$ — which is exactly what the measurement is for. Current numbers are
+in [`docs/15-results.md`](docs/15-results.md).
+
+---
+
+## Repository layout
+
+```
+envs/
+  go2_env.py        the environment (v2)
+  go2_env_v1.py     the original, frozen verbatim for comparison and ablation
+  rewards.py        16 reward terms, one pure function each
+  gait.py           phase clock and gait definitions
+  commands.py       command sampling and the adaptive curriculum
+callbacks/
+  curriculum.py     closed-loop command curriculum
+  logging.py        per-reward-term TensorBoard logging
+ppo_from_scratch/
+  ppo.py            annotated PPO, cross-referenced to the docs
+  train_scratch.py  trains the same environment
+scripts/
+  train.py          SB3 training
+  check_env.py      pre-flight sanity check
+  play.py           keyboard teleop
+  evaluate.py       command-grid evaluation
+  gait_analysis.py  gait diagrams and duty/phase measurement
+tests/              67 tests: maths, gait schedule, reward terms, env, MJX parity
+docs/               the book (17 chapters)
+configs/            YAML: reward weights, command ranges, PPO hyperparameters
 ```
 
 ---
 
-## Hyperparameters
+## The documentation
 
-<details>
-<summary>Full hyperparameter table</summary>
+[`docs/README.md`](docs/README.md) is the index. In brief:
 
-| Parameter | Value | Notes |
-|:---|:---|:---|
-| Algorithm | PPO | On-policy, good for locomotion |
-| Policy network | MLP [256, 256] | Separate actor/critic heads |
-| Learning rate | 3e-4 | Standard for continuous control |
-| Rollout length | 2048 steps/env | Long rollouts help locomotion |
-| Mini-batch size | 64 | 2048*8/64 = 256 updates per epoch |
-| Epochs per update | 10 | Multiple passes over each rollout |
-| Discount (gamma) | 0.99 | Long horizon for steady gaits |
-| GAE lambda | 0.95 | Bias-variance tradeoff in advantages |
-| Clip range | 0.2 | PPO's trust region constraint |
-| Entropy coefficient | 0.01 | Encourages exploration |
-| Value function coeff. | 0.5 | Critic loss weight |
-| Max gradient norm | 0.5 | Gradient clipping |
-| Parallel envs | 8 | SubprocVecEnv for throughput |
-| Observation norm | VecNormalize | Running mean/std, clip at 10 |
-| Reward norm | VecNormalize | Stabilizes training signal |
-| PD gains (Kp, Kd) | 40, 1 | Position control stiffness/damping |
-| Frame skip | 20 | 500 Hz physics / 25 Hz control |
-| Action scale | 0.5 rad | ~28 deg max joint offset |
+**Part I — the algorithm.** MDPs and returns; value functions and the advantage;
+the policy gradient theorem derived from the log-derivative trick; actor-critic
+and a full GAE derivation; TRPO to PPO with the clipped objective explained case
+by case; the from-scratch code line by line; and an honest re-reading of this
+repository's own PPO-vs-SAC-vs-TD3 comparison.
 
-</details>
+**Part II — the robot.** The Go2, MuJoCo, and PD control; every observation
+dimension; reward engineering with a worked exploit; gaits and phase; curriculum
+and domain randomisation.
 
-## Project Structure
+**Part III — practice.** Reading a training run; the debugging log; results;
+what sim-to-real would take; and scaling with MJX.
 
-```
-quadruped-rl-locomotion/
-├── envs/
-│   ├── __init__.py                 # Gym registration (Go2Walk-v0)
-│   └── go2_env.py                  # Environment: observations, reward, PD control, termination
-├── callbacks/
-│   ├── __init__.py
-│   └── curriculum.py               # Linearly ramps target velocity during training
-├── configs/
-│   └── training_config.yaml        # All hyperparameters in one place
-├── scripts/
-│   ├── train.py                    # PPO training with SubprocVecEnv + VecNormalize
-│   ├── evaluate.py                 # Run N episodes, print metrics table
-│   ├── record_video.py             # Record MP4 + GIF with tracking camera
-│   ├── compare_algorithms.py       # Train PPO, SAC, TD3 side by side
-│   ├── plot_results.py             # Plot training curves from TensorBoard logs
-│   ├── verify_model.py             # Sanity check: load env, step random actions
-│   ├── gait_analysis.py            # Foot contact analysis + gait diagram
-│   ├── generate_terrain.py         # Heightfield terrain generation
-│   └── record_push_recovery.py     # Push recovery demo recording
-├── models/                         # Trained weights (gitignored)
-├── logs/                           # Evaluation results and training logs
-├── assets/                         # Demo GIFs and videos
-├── requirements.txt
-└── Makefile                        # One-command workflows
-```
-
-## Tech Stack
-
-| Component | Tool | Purpose |
-|:---|:---|:---|
-| Physics simulation | [MuJoCo 3.x](https://mujoco.org/) | Fast, accurate rigid body dynamics |
-| Robot model | [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) | Unitree Go2 MJCF |
-| RL interface | [Gymnasium](https://gymnasium.farama.org/) | Standard env API |
-| RL algorithms | [Stable-Baselines3](https://github.com/DLR-RM/stable-baselines3) | PPO, SAC, TD3 implementations |
-| Training monitoring | [TensorBoard](https://www.tensorflow.org/tensorboard) | Loss curves, reward tracking |
-| Video recording | [imageio](https://imageio.readthedocs.io/) | MP4 + GIF export |
-
-## Advanced Analysis
-
-### Gait Analysis
-
-The trained policy develops an emergent gait with all four feet coordinating at ~3 Hz stride frequency. Phase offsets (FR=0.25, RL=0.88, RR=0.62 relative to FL) show a sequential pattern rather than a clean trot or bound — the policy discovered its own efficient coordination. The rear legs show higher duty factors (RL 59%, RR 69%), indicating rear-heavy propulsion consistent with biological quadrupeds where hindlimbs generate most forward thrust.
-
-```bash
-# Generate gait diagram from trained policy
-make gait-analysis
-```
-
-![Gait Diagram](assets/gait_analysis.png)
-
-### Push Recovery
-
-The policy shows robustness to external perturbations, recovering from lateral velocity impulses of up to 2.0 m/s. This robustness comes from the combination of domain randomization (random pushes every 200 steps during training) and the orientation penalty in the reward function.
-
-```bash
-# Record push recovery demo
-make push-recovery
-```
-
-![Push Recovery](assets/go2_push_recovery.gif)
-
-### Rough Terrain
-
-A heightfield terrain generator creates Gaussian-smoothed random bumps for testing locomotion robustness on uneven ground. The policy — trained only on flat ground — survives 400+ steps on rough terrain (0.05m max bump height) before falling.
-
-![Rough Terrain](assets/go2_terrain.gif)
-
-```bash
-# Generate terrain XML and heightfield
-make terrain
-```
+Two chapters are worth reading even if you skip the rest:
+[13 (training diagnostics)](docs/13-training-diagnostics.md) before your first
+long run, and [14 (the debugging log)](docs/14-debugging-log.md) for how the
+bugs were actually found.
 
 ---
 
-## Sim-to-Real Considerations
+## Requirements
 
-This project is simulation-only, but the architecture is designed with sim-to-real transfer in mind. Here's what would be needed to deploy on a physical Unitree Go2:
+MuJoCo 3.x, Gymnasium 1.x, Stable-Baselines3 2.x, PyTorch, and the
+[MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) Go2
+model (cloned by `make setup`). `requirements.txt` resolves to the CPU build of
+PyTorch; install a CUDA build separately if you have a GPU.
 
-### What transfers directly
+## Acknowledgements
 
-| Component | Sim | Real | Transfer difficulty |
-|:---|:---|:---|:---|
-| PD position controller | Software PD on torque actuators | Go2 SDK accepts position targets natively | Trivial — the SDK handles PD internally |
-| Policy network | MLP [256, 256], ~135K params | Runs at 25 Hz on any embedded CPU | Trivial — inference is <1ms |
-| Observation space | From `qpos`/`qvel` | IMU + joint encoders provide the same signals | Moderate — sensor noise differs |
-| Action space | Position offsets from default pose | Same representation, mapped to SDK joint commands | Direct mapping |
-
-### The sim-to-real gap
-
-The main challenges for real deployment:
-
-1. **Actuator dynamics.** MuJoCo models the Go2's actuators as ideal torque sources with hard limits (±23.7 Nm). Real motors have delay (~5-10ms), backlash, friction, and torque curves that depend on speed. Training with domain randomization on motor strength (±10-20%) partially addresses this.
-
-2. **Contact modeling.** MuJoCo's contact solver uses soft contacts with well-defined friction cones. Real foot-ground contact is noisy, varies with surface material, and includes deformable rubber foot pads. The foot contact binary signal is particularly unreliable on real hardware.
-
-3. **State estimation.** In simulation, `qvel` gives exact base velocity. On hardware, this must be estimated from IMU integration (drift-prone) or a state estimator fusing IMU + leg kinematics + (optionally) visual odometry. This is often the biggest sim-to-real gap.
-
-4. **Latency.** Sim runs with zero communication delay. Real systems have 5-20ms of sensor-to-actuator latency. Adding artificial observation delay during training (1-3 steps of random delay) is a common mitigation.
-
-### Standard sim-to-real techniques
-
-The following techniques from the literature would improve transfer:
-
-- **Domain randomization** (partially implemented): Randomize friction, mass, motor strength, observation noise, and actuation delay during training so the policy learns to be robust to parameter uncertainty.
-- **Asymmetric actor-critic**: Give the critic access to privileged simulation state (exact contacts, terrain height) while the actor only sees realistic observations. This improves training efficiency without affecting deployment.
-- **Teacher-student distillation**: Train a teacher policy with privileged info, then distill into a student that uses only deployable observations.
-- **Action filtering**: Apply a low-pass filter to actions before sending to motors, reducing high-frequency jitter that real actuators can't track.
-
-> **Reference implementations:** [legged_gym](https://github.com/leggedrobotics/legged_gym) (ETH Zurich) and [walk-these-ways](https://github.com/Improbable-AI/walk-these-ways) (MIT) demonstrate full sim-to-real pipelines for quadruped locomotion using these techniques.
-
----
-
-## References
-
-- Rudin et al., [Learning to Walk in Minutes Using Massively Parallel Deep RL](https://arxiv.org/abs/2109.11978), CoRL 2022
-- Schulman et al., [Proximal Policy Optimization Algorithms](https://arxiv.org/abs/1707.06347), 2017
-- Hwangbo et al., [Learning Agile and Dynamic Motor Skills for Legged Robots](https://arxiv.org/abs/1901.08652), Science Robotics 2019
-- [MuJoCo Menagerie — Unitree Go2](https://github.com/google-deepmind/mujoco_menagerie/tree/main/unitree_go2)
-- [Stable-Baselines3 Documentation](https://stable-baselines3.readthedocs.io/)
-
----
-
-<div align="center">
-
-Built with MuJoCo, Gymnasium, and Stable-Baselines3
-
-</div>
+Robot model from [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie).
+The reward structure follows the conventions established by
+[legged_gym](https://github.com/leggedrobotics/legged_gym) (Rudin et al.), and
+the gait-phase formulation follows the line of work on periodic reward
+composition in quadruped locomotion.

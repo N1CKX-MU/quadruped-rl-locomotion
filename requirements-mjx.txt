@@ -1,0 +1,16 @@
+# Optional: the MJX (GPU) training path. See docs/17-mjx-and-scaling.md.
+#
+#   pip install -r requirements-mjx.txt
+#
+# For a CUDA GPU, replace the jax line with:
+#   pip install "jax[cuda12]==0.7.2" "jaxlib==0.7.2"
+#
+# Version note, from actually running this: brax 0.14.2 calls
+# jax.device_put_replicated, which was REMOVED in jax 0.11. With jax>=0.11 the
+# trainer fails at start-up with an AttributeError. jax 0.7.2 is the version
+# this was verified against. flax will warn that it wants jax>=0.11.1; the
+# warning is harmless for the brax PPO path.
+jax==0.7.2
+jaxlib==0.7.2
+mujoco-mjx>=3.2.0
+brax>=0.12.0

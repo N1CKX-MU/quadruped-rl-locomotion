@@ -1,0 +1,123 @@
+"""MJX backend tests.
+
+The claim these defend is the one that makes the MJX path worth having at all:
+that the GPU environment optimises the *same objective* as the CPU one. Two
+independent implementations of a sixteen-term reward will drift apart, and the
+drift surfaces months later as an unexplained performance gap between the two
+backends. Sharing `envs/rewards.py` and `envs/gait.py` across both is only
+meaningful if something checks that the sharing actually works.
+
+Skipped entirely when jax is not installed - it is an optional dependency.
+"""
+
+import os
+
+import numpy as np
+import pytest
+
+jax = pytest.importorskip("jax")
+jnp = pytest.importorskip("jax.numpy")
+
+from envs import rewards as R  # noqa: E402
+
+XML = "mujoco_menagerie/unitree_go2/scene_mjx.xml"
+
+
+def make_state(xp):
+    """The same hand-constructed state, built with numpy or with jax.numpy."""
+    n = 12
+    return R.RewardState(
+        lin_vel_b=xp.array([0.5, 0.1, -0.05]),
+        ang_vel_b=xp.array([0.02, -0.03, 0.4]),
+        proj_gravity=xp.array([0.05, -0.02, -0.998]),
+        base_height=xp.array(0.29),
+        joint_pos=xp.linspace(-0.4, 0.4, n),
+        joint_vel=xp.linspace(-2.0, 2.0, n),
+        joint_vel_prev=xp.linspace(-1.5, 1.5, n),
+        default_joint_pos=xp.zeros(n),
+        soft_joint_limits=xp.stack([xp.full((n,), -1.0), xp.full((n,), 1.0)], axis=1),
+        torques=xp.linspace(-5.0, 5.0, n),
+        action=xp.linspace(-0.5, 0.5, n),
+        prev_action=xp.linspace(-0.4, 0.4, n),
+        contact=xp.array([1.0, 0.0, 0.0, 1.0]),
+        desired_contact=xp.array([1.0, 0.0, 0.0, 1.0]),
+        feet_air_time=xp.array([0.0, 0.3, 0.3, 0.0]),
+        feet_first_contact=xp.array([1.0, 0.0, 0.0, 0.0]),
+        feet_vel_xy=xp.full((4, 2), 0.1),
+        feet_height=xp.array([0.01, 0.06, 0.06, 0.01]),
+        cmd=xp.array([0.6, 0.0, 0.4]),
+        cmd_base_height=xp.array(0.30),
+        undesired_contacts=xp.array(1.0),
+        dt=0.02,
+    )
+
+
+def test_reward_agrees_between_numpy_and_jax():
+    """The headline test: the same reward, to floating-point tolerance."""
+    weights = R.resolve_weights(None)
+    total_np, terms_np = R.compute(make_state(np), weights)
+    total_jx, terms_jx = R.compute(make_state(jnp), weights)
+
+    assert np.allclose(float(total_np), float(total_jx), atol=1e-5)
+    assert set(terms_np) == set(terms_jx)
+    for name in terms_np:
+        assert np.allclose(float(terms_np[name]), float(terms_jx[name]),
+                           atol=1e-5), name
+
+
+def test_reward_is_jittable_and_vmappable():
+    """If either fails, the MJX environment cannot use the shared reward."""
+    weights = R.resolve_weights(None)
+
+    fn = jax.jit(lambda: R.compute(make_state(jnp), weights)[0])
+    assert np.isfinite(float(fn()))
+
+    batched = jax.vmap(lambda _: R.compute(make_state(jnp), weights)[0])
+    assert batched(jnp.arange(4)).shape == (4,)
+
+
+def test_gait_schedule_agrees_between_backends():
+    from envs.gait import desired_contact, gait_params
+
+    offsets, duty = gait_params("trot")
+    for phase in np.linspace(0.0, 1.0, 21, endpoint=False):
+        a = desired_contact(phase, np.asarray(offsets), duty)
+        b = desired_contact(jnp.asarray(phase), jnp.asarray(offsets), duty)
+        assert np.allclose(np.asarray(a), np.asarray(b)), phase
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+def test_mjx_env_resets_steps_and_vmaps():
+    """End-to-end: the environment traces, jits and vmaps, and the physics is sane.
+
+    Deliberately small (4 environments, 3 steps). On CPU jax this is slow and
+    proves nothing about throughput - it proves the program is well-formed,
+    which is the part that can be checked without a GPU.
+    """
+    pytest.importorskip("mujoco.mjx")
+    from mjx.mjx_env import Go2MJXEnv
+
+    env = Go2MJXEnv()
+    assert env.obs_size == 50
+    assert env.action_size == 12
+    # Bug B1 again, on the MJX side: the nominal pose must be the home keyframe.
+    assert np.allclose(np.asarray(env.default_joint_pos),
+                       np.tile([0.0, 0.9, -1.8], 4), atol=1e-6)
+
+    reset = jax.jit(jax.vmap(env.reset))
+    step = jax.jit(jax.vmap(env.step))
+
+    state = reset(jax.random.split(jax.random.PRNGKey(0), 4))
+    assert state["obs"].shape == (4, 50)
+    assert np.all(np.isfinite(np.asarray(state["obs"])))
+
+    action = jnp.zeros((4, 12))
+    for _ in range(3):
+        state, terms = step(state, action)
+
+    assert np.all(np.isfinite(np.asarray(state["reward"])))
+    heights = np.asarray(state["data"].qpos[:, 2])
+    assert np.all((heights > 0.1) & (heights < 0.6)), heights
+    # Every configured non-zero term must be reported, same as the CPU env.
+    expected = {k for k, w in env.weights.items() if w != 0.0}
+    assert set(terms) == expected
