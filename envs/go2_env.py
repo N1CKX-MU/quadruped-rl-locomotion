@@ -327,6 +327,17 @@ class Go2Env(gym.Env):
     def _apply_gait(self, name):
         self._gait_offsets, self._gait_duty = gait_mod.gait_params(name)
 
+    def _target_swing_time(self):
+        """Scheduled seconds of swing per foot, from the active gait command.
+
+        feet_air_time credits air time up to this value. Deriving it from the
+        commanded duty and frequency, rather than hard-coding a constant, is
+        what keeps that term consistent with the gait actually being asked for
+        (see docs/14-debugging-log.md, B19).
+        """
+        freq = max(float(self.command.gait_frequency), 1e-3)
+        return (1.0 - self._gait_duty) / freq
+
     # ------------------------------------------------------------------ #
     #  Kinematic helpers                                                  #
     # ------------------------------------------------------------------ #
@@ -495,6 +506,7 @@ class Go2Env(gym.Env):
             dt=self.dt,
             lin_vel_sigma=self.lin_vel_sigma,
             ang_vel_sigma=self.ang_vel_sigma,
+            target_swing_time=self._target_swing_time(),
         )
 
     # ------------------------------------------------------------------ #

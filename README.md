@@ -25,7 +25,7 @@ make play           # drive it yourself: WASD, Q/E, 1-5 for gaits
 v1 trained a policy that walked forwards at 0.74 m/s and could do nothing else.
 That was not a tuning limit. It was the sum of sixteen specific defects, none of
 which produced an error message, all of which survived five documented training
-runs. Two more (B17, B18) were found in v2 and are listed alongside them.
+runs. Three more (B17, B18, B19) were found in v2 and are listed alongside them.
 
 The headline one:
 
@@ -60,6 +60,7 @@ The full list is [`docs/14-debugging-log.md`](docs/14-debugging-log.md). Summary
 | B16 | `mujoco.viewer` used without being imported | `render("human")` crashed |
 | B17 | Swing clearance too marginal to lift a foot (found in v2) | No gait |
 | B18 | Stepping reward was piecewise constant, so its gradient was zero (v2) | No gradient toward stepping |
+| B19 | Stride reward made a correct trot score worse than standing still (v2) | Target behaviour was penalised |
 
 Four things were checked and found **not** to be bugs — the quaternion helper,
 the torque units, the timeout bootstrapping, and the PD gains. Those are
