@@ -105,8 +105,26 @@ class CommandSampler:
         resample_interval_s=5.0,
         gaits=("trot",),
         gait_probabilities=None,
+        max_speed_per_hz=None,
+        max_speed=None,
+        feasibility_margin=0.85,
     ):
         self.ranges = ranges or CommandRanges()
+        # Feasibility bound on speed. Sampling speed and gait frequency
+        # independently produces combinations the robot physically cannot
+        # satisfy, and an infeasible command is worse than useless: the
+        # exponential tracking kernel saturates at large error and hands the
+        # policy no gradient at all, so the command is pure noise in the
+        # observation. See docs/14-debugging-log.md, B20.
+        #
+        #     v_max = min(max_speed_per_hz * f, max_speed) * margin
+        #
+        # Both constants come from measurement, not from the static kinematic
+        # sweep - see the note in configs/training_config.yaml. Set either to
+        # None to disable that half of the bound.
+        self.max_speed_per_hz = max_speed_per_hz
+        self.max_speed = max_speed
+        self.feasibility_margin = float(feasibility_margin)
         self.stand_probability = float(stand_probability)
         self.resample_interval_s = float(resample_interval_s)
         for g in gaits:
@@ -130,8 +148,23 @@ class CommandSampler:
             cmd.gait = "stand"
             return cmd
 
-        cmd.lin_vel_x = float(rng.uniform(*r.lin_vel_x))
-        cmd.lin_vel_y = float(rng.uniform(*r.lin_vel_y))
+        lo_x, hi_x = r.lin_vel_x
+        lo_y, hi_y = r.lin_vel_y
+        if self.max_speed_per_hz or self.max_speed:
+            # Bound the speed by what this gait frequency can actually deliver.
+            v_max = float("inf")
+            if self.max_speed_per_hz:
+                v_max = self.max_speed_per_hz * cmd.gait_frequency
+            if self.max_speed:
+                v_max = min(v_max, self.max_speed)
+            v_max *= self.feasibility_margin
+            lo_x, hi_x = max(lo_x, -v_max), min(hi_x, v_max)
+            # Lateral strides are shorter than fore-aft ones; half is a
+            # conservative, and empirically reasonable, allowance.
+            lo_y, hi_y = max(lo_y, -0.5 * v_max), min(hi_y, 0.5 * v_max)
+
+        cmd.lin_vel_x = float(rng.uniform(lo_x, hi_x))
+        cmd.lin_vel_y = float(rng.uniform(lo_y, hi_y))
         cmd.ang_vel_yaw = float(rng.uniform(*r.ang_vel_yaw))
 
         # A command whose magnitude lands near zero by chance is snapped to a

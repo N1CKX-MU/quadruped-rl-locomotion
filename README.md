@@ -25,7 +25,7 @@ make play           # drive it yourself: WASD, Q/E, 1-5 for gaits
 v1 trained a policy that walked forwards at 0.74 m/s and could do nothing else.
 That was not a tuning limit. It was the sum of sixteen specific defects, none of
 which produced an error message, all of which survived five documented training
-runs. Three more (B17, B18, B19) were found in v2 and are listed alongside them.
+runs. Four more (B17-B20) were found in v2 and are listed alongside them.
 
 The headline one:
 
@@ -61,6 +61,7 @@ The full list is [`docs/14-debugging-log.md`](docs/14-debugging-log.md). Summary
 | B17 | Swing clearance too marginal to lift a foot (found in v2) | No gait |
 | B18 | Stepping reward was piecewise constant, so its gradient was zero (v2) | No gradient toward stepping |
 | B19 | Stride reward made a correct trot score worse than standing still (v2) | Target behaviour was penalised |
+| B20 | Command envelope asked for speeds the leg geometry cannot reach (v2) | Tracking reward saturated |
 
 Four things were checked and found **not** to be bugs — the quaternion helper,
 the torque units, the timeout bootstrapping, and the PD gains. Those are
@@ -75,6 +76,7 @@ misrepresents how the work goes.
 | Directions | forward | forward, backward, strafe, turn, and combinations |
 | Gait | emergent, uncontrollable | commanded: trot / pace / bound / walk / pronk / stand |
 | Step frequency | — | commandable, 1.5–3.0 Hz |
+| Command feasibility | n/a | every command clamped to a measured speed envelope |
 | Body height | — | commandable, 0.27–0.34 m |
 | Curriculum | open-loop ramp of one scalar | closed-loop over the full command envelope |
 | Control rate | 25 Hz | 50 Hz, with the PD loop at 500 Hz |
@@ -92,7 +94,7 @@ Every dimension is justified in
 [`docs/09-observations-and-actions.md`](docs/09-observations-and-actions.md).
 
 **Action** (12 dims): joint position offsets from the Go2's `home` pose, scaled
-by 0.30 rad, tracked by a PD controller ($k_p=55$, $k_d=1.4$) recomputed at
+by 0.40 rad, tracked by a PD controller ($k_p=55$, $k_d=1.4$) recomputed at
 every 2 ms physics step. This is the same interface the real robot exposes.
 
 **The gait is a clock, not an emergent property.** A scalar phase

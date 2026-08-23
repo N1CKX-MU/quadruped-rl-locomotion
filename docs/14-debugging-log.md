@@ -1,8 +1,8 @@
 # 14. The debugging log
 
-Nineteen defects, with the reasoning that found each one and the evidence that
+Twenty defects, with the reasoning that found each one and the evidence that
 confirmed it. Sixteen were in the v1 environment and training script; the last
-three (B17, B18, B19) were found in v2 and are included because they were found the
+four (B17-B20) were found in v2 and are included because they were found the
 same way and illustrate the method better than anything else here.
 
 This is the most useful chapter in the book, for a reason that is worth stating
@@ -769,6 +769,125 @@ will find it, and you will spend days blaming exploration.
 
 ---
 
+## B20 — The command envelope asked for speeds the robot cannot reach (found in v2)
+
+With B19 fixed, the policy finally learned the gait: at 3M steps
+`scripts/gait_analysis.py` reported **86.8% schedule match** and a stride
+frequency of exactly 2.00 Hz on all four feet, with the diagonal pairing
+correct. It was trotting on the spot.
+
+Achieved forward velocity: **0.064 m/s**, against a command of 0.8.
+
+### The evidence
+
+Speed comes from stride length times step frequency. During stance the foot is
+planted and the *body* moves over it, so the fore-aft travel available to a
+planted foot is the stride length. That is a kinematic question, answerable
+without training anything — the same sweep used for B17, rotated ninety degrees:
+
+| action scale | stance foot travel | implied v at 2 Hz |
+|---|---|---|
+| 0.25 | 16.2 cm | 0.32 m/s |
+| 0.30 | 19.9 cm | 0.40 m/s |
+| 0.40 | 28.5 cm | 0.57 m/s |
+| 0.50 | 34.4 cm | 0.69 m/s |
+
+The config at the time used `action_scale = 0.30` and a command envelope
+reaching **1.5 m/s**. At 2 Hz that needs a 75 cm stride from a 43 cm leg.
+
+So a large part of the command distribution was unreachable, and — this is the
+part that matters — an unreachable command is not merely unhelpful. The
+exponential tracking kernel *saturates*: at an error of 1.5 m/s its gradient is
+about $4\times10^{-5}$ (chapter 10, §10.3). The policy receives no useful signal
+for those commands at all, so the command channel becomes noise in the
+observation, and the best available behaviour is to ignore it.
+
+This is bug B1's shape again — the command space contained points the robot
+could not reach — but quantitative rather than absolute.
+
+### The correction to the correction
+
+The static sweep is a **lower bound**, and taking it as a hard cap would have
+been a second mistake in the opposite direction. Driving a scripted open-loop
+trot and simply measuring the top speed it reaches:
+
+| action scale | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
+|---|---|---|---|---|
+| 0.30 | 0.52 | 0.62 | 0.65 | 0.69 |
+| 0.40 | 0.57 | **0.94** | 1.05 | **1.08** |
+
+The real robot goes considerably faster than the static sweep predicts, because
+body pitch, foot roll on the spherical contact, and dynamic effects all add
+stride that a fixed-base kinematic sweep cannot see. At `action_scale = 0.40`
+the measured ceiling is about 1.08 m/s, not the 0.87 the sweep implies.
+
+Trusting the static number would have capped the robot below its ability;
+trusting the aspirational number starved it of gradient. **Measure.**
+
+### The fix
+
+Three parts.
+
+**Raise the action scale to 0.40.** This buys stride length directly. It stops
+there because $k_p \times \alpha = 55 \times 0.40 = 22$ N·m, and the hip and
+thigh actuators are limited to 23.7 N·m — beyond that the PD offset alone
+saturates the actuator.
+
+**Clamp every sampled command to what its own sampled frequency can deliver:**
+
+$$
+v_\max = \min\big(\kappa f,\ v_\text{ceiling}\big) \cdot m,
+\qquad \kappa = 0.40\ \tfrac{\text{m/s}}{\text{Hz}},\ v_\text{ceiling} = 1.0,\ m = 0.85
+$$
+
+Both constants come from the measured table. Sampling speed and frequency
+independently, as the code did, generates pairs like "1.0 m/s at 1.5 Hz" that
+no gait can satisfy.
+
+**Set the configured range at the limit rather than above it.** The clamp means
+a wider range would not be *wrong* — it would just be a number that never means
+anything, which is exactly the kind of latent inconsistency this whole exercise
+is about removing.
+
+### Confirmed by measurement
+
+`scripts/check_env.py` now prints the speed envelope and the do-nothing baseline
+before any training happens:
+
+```
+frequency static bound  sampler limit
+    1.5 Hz        0.44           0.51
+    2.0 Hz        0.58           0.68
+    3.0 Hz        0.87           0.85
+
+configured |vx| range: 0.85 m/s
+verdict             : every configured command is reachable
+do-nothing tracking score : 0.571   (curriculum promotes above 0.85)
+```
+
+And the decisive check — does a competent gait actually out-score doing nothing?
+
+| command | scripted trot | standing | winner |
+|---|---|---|---|
+| 0.50 m/s | $+0.02405$ | $+0.03669$ | standing |
+| 0.70 m/s | $+0.03298$ | $+0.03069$ | **trot** |
+| 0.85 m/s | $+0.03785$ | $+0.02891$ | **trot** |
+
+The scripted controller is open-loop and always runs at 0.94 m/s, so at a
+command of 0.5 it overshoots and is correctly penalised. At commands near its
+own speed it wins by up to 31%. That is the reward behaving exactly as intended.
+
+### Lesson
+
+**A command space is part of the action space, and it needs the same
+reachability audit.** Before training a command-conditioned policy, ask what
+the extremes of the command distribution physically require, and check the
+robot can do it. Then check by measurement rather than by kinematics alone,
+because a static bound will be conservative in a way that quietly costs you
+performance.
+
+---
+
 ## Things that were checked and were *not* bugs
 
 Recording these matters as much as recording the bugs. A debugging log that only
@@ -818,6 +937,7 @@ were wrong.
 | B17 | Marginal swing clearance (v2) | No foot lift |
 | B18 | Stepping reward was piecewise constant (v2) | **No gradient toward stepping** |
 | B19 | Stride reward made a correct trot score worse than standing (v2) | **Target behaviour was penalised** |
+| B20 | Command envelope asked for unreachable speeds (v2) | Tracking reward saturated; command ignored |
 
 The through-line: **not one of these announced itself.** Every one had to be
 found by asking what would have to be true for the code to be right, and then

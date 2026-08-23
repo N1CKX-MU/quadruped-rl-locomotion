@@ -26,12 +26,19 @@ environment:
   # body drops by almost exactly as much as the swing foot rises. A scripted
   # open-loop trot at kp=40, scale=0.25 achieved only 0.12 s of air time.
   #
-  # Raising the scale to 0.30 and kp to 55 gives the policy headroom to extend
-  # the stance legs and retract the swing legs at the same time, which is what
-  # a real gait does. Same script, same amplitudes, with stance extension added:
-  # air time 0.12 s -> 0.24 s and schedule match 0.61 -> 0.74. See
-  # docs/13-training-diagnostics.md for the full measurement.
-  action_scale: 0.30
+  # Raising the scale and kp gives the policy headroom to extend the stance legs
+  # and retract the swing legs at the same time, which is what a real gait does.
+  # Same script, same amplitudes, with stance extension added: air time
+  # 0.12 s -> 0.24 s and schedule match 0.61 -> 0.74.
+  #
+  # The scale also sets STRIDE LENGTH, which is the binding constraint on speed.
+  # During stance the foot is planted and the body moves over it, so with no
+  # flight phase v_max = stride x frequency. Measured fore-aft foot excursion:
+  # 0.25 -> 19cm, 0.30 -> 22cm, 0.40 -> 29cm, 0.50 -> 36cm. At 0.40 the robot
+  # can reach 0.58 m/s at 2 Hz and 0.87 m/s at 3 Hz. Going higher is tempting
+  # but 0.45 puts the PD offset torque (kp x scale = 24.8 Nm) past the hip and
+  # thigh actuator limit of 23.7 Nm. See docs/14-debugging-log.md, B20.
+  action_scale: 0.40
 
   # Joint-space PD gains. Measured, not guessed. Standing sag under zero action
   # from the 0.27 m nominal pose: 7.4 cm at kp=20, 2.8 cm at kp=40, 1.4 cm at
@@ -75,6 +82,30 @@ commands:
   # network serve all of them.
   gaits: ["trot"]
   stand_probability: 0.10        # explicit "hold still" mode
+  # Speed feasibility. Sampling speed and gait frequency independently produces
+  # commands the robot cannot satisfy at that frequency, and an infeasible
+  # command is worse than useless - the exponential tracking kernel saturates,
+  # so the policy gets no gradient and the command becomes noise in the
+  # observation. The sampler clamps every command to
+  #
+  #     v_max = min(max_speed_per_hz * f, max_speed) * feasibility_margin
+  #
+  # These constants are MEASURED, by driving a scripted open-loop trot at each
+  # (action_scale, frequency) and recording the best speed it reaches:
+  #
+  #     scale   1.5Hz  2.0Hz  2.5Hz  3.0Hz
+  #      0.30    0.52   0.62   0.65   0.69
+  #      0.40    0.57   0.94   1.05   1.08     <- current action_scale
+  #
+  # A purely kinematic sweep of stance-foot travel gives 0.29 m of stride, which
+  # predicts 0.87 m/s at 3 Hz - a useful LOWER bound, but too conservative,
+  # because body pitch, foot roll on the sphere, and dynamic effects add stride
+  # the static sweep cannot see. Trusting the static number would have capped
+  # the robot below what it can do; trusting an aspirational number (the config
+  # previously asked for 1.5 m/s) starves it of gradient. Measure instead.
+  max_speed_per_hz: 0.40         # m/s per Hz of gait frequency
+  max_speed: 1.0                 # absolute ceiling, m/s
+  feasibility_margin: 0.85       # leave the policy somewhere to actually reach
   resample_interval_s: 5.0       # also resample mid-episode
 
   # Curriculum start. Wider than you might expect, and deliberately so: the
@@ -84,16 +115,27 @@ commands:
   # At these ranges a stationary robot scores 0.57 on the tracking score against
   # a promotion threshold of 0.85, which leaves real headroom to climb.
   initial:
-    lin_vel_x: [-0.5, 1.0]
+    lin_vel_x: [-0.5, 0.85]
     lin_vel_y: [-0.3, 0.3]
-    ang_vel_yaw: [-0.6, 0.6]
-    gait_frequency: [1.8, 2.2]
+    ang_vel_yaw: [-0.8, 0.8]
+    # The initial frequency range is wide on purpose. Speed is bounded by
+    # stride x frequency, so a narrow low-frequency band would cap the
+    # commanded speed so low that standing still nearly satisfies it - the
+    # trap described in docs/10-reward-engineering.md, 10.4. Measured
+    # do-nothing tracking score at these ranges: 0.61, against a promotion
+    # threshold of 0.85.
+    gait_frequency: [1.8, 3.0]
     base_height: [0.29, 0.31]
 
   # Curriculum end: the full omnidirectional envelope.
+  # Set AT the measured limit: min(0.40 x 3.0, 1.0) x 0.85 = 0.85 m/s. The
+  # sampler clamps to that anyway, so a wider range here would not be wrong -
+  # it would just be a number that never means anything, which is the kind of
+  # latent inconsistency this repository exists to remove. To go faster, raise
+  # action_scale, re-measure, and re-run `make check`.
   final:
-    lin_vel_x: [-1.0, 1.5]
-    lin_vel_y: [-0.7, 0.7]
+    lin_vel_x: [-0.70, 0.85]
+    lin_vel_y: [-0.40, 0.40]
     ang_vel_yaw: [-1.5, 1.5]
     gait_frequency: [1.5, 3.0]
     base_height: [0.27, 0.34]
