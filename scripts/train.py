@@ -62,6 +62,9 @@ def build_env_kwargs(config):
         stand_probability=cmd_cfg.get("stand_probability", 0.10),
         command_resample_interval_s=cmd_cfg.get("resample_interval_s", 5.0),
         gaits=tuple(cmd_cfg.get("gaits", ["trot"])),
+        max_speed_per_hz=cmd_cfg.get("max_speed_per_hz", 0.40),
+        max_speed=cmd_cfg.get("max_speed", 1.0),
+        feasibility_margin=cmd_cfg.get("feasibility_margin", 0.85),
         reward_weights=reward_cfg,
     )
     return env_cfg

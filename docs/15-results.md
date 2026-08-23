@@ -74,6 +74,61 @@ version: a kinematic sweep says 0.25 rad retracts a foot 5.9 cm, which should be
 ample — but while two legs retract the other two sag under the whole robot, and
 the trunk drops by nearly as much as the swing foot rises.
 
+### Speed envelope (bug B20)
+
+Top speed of a scripted open-loop trot, best over swing amplitude and phase.
+No policy, no learning:
+
+| action scale | 1.5 Hz | 2.0 Hz | 2.5 Hz | 3.0 Hz |
+|---|---|---|---|---|
+| 0.30 | 0.52 | 0.62 | 0.65 | 0.69 |
+| **0.40** | **0.57** | **0.94** | **1.05** | **1.08** |
+
+A static kinematic sweep of stance-foot travel gives 0.29 m of stride at
+`action_scale = 0.40`, predicting 0.87 m/s at 3 Hz. The measured 1.08 m/s is
+higher, because body pitch, foot roll on the spherical contact and dynamic
+effects add stride the fixed-base sweep cannot see. The sweep is a useful lower
+bound and a bad ceiling.
+
+`action_scale` stops at 0.40 because $k_p 	imes lpha = 22$ N·m against a
+23.7 N·m hip and thigh actuator limit.
+
+### Does a competent gait out-score doing nothing?
+
+The single most important pre-training check, and the one that would have caught
+all three v2 stalls. Scripted trot versus zero action, under the final reward:
+
+| command | scripted trot | standing | winner |
+|---|---|---|---|
+| 0.50 m/s | $+0.02405$ | $+0.03669$ | standing |
+| 0.70 m/s | $+0.03298$ | $+0.03069$ | **trot** (+7%) |
+| 0.85 m/s | $+0.03785$ | $+0.02891$ | **trot** (+31%) |
+
+The scripted controller is open loop and always runs at 0.94 m/s, so at a
+command of 0.5 it overshoots and is correctly penalised. At commands near its
+own speed it wins clearly.
+
+Before the B19 fix, the trot lost at *every* command, by up to $-0.08$ per step.
+
+### The gait mechanism, measured on a partially-trained policy
+
+At 3M steps (before the B20 fix, so it trots on the spot rather than
+travelling), `scripts/gait_analysis.py` at a trot command:
+
+```
+schedule match      : 86.8%
+foot                       duty  stride Hz phase (meas)  phase (ref)
+FL (front left)           0.563       1.99         0.00         0.00
+FR (front right)          0.803       1.99         0.36         0.50
+RL (rear left)            0.640       2.00         0.48         0.50
+RR (rear right)           0.520       2.00         0.00         0.00
+```
+
+Stride frequency is exactly the commanded 2.00 Hz on all four feet, and the
+diagonal pairing is correct (FL with RR near phase 0, FR with RL near 0.5). The
+phase-clock mechanism of chapter 11 works: the policy reads the clock from its
+observation and matches the schedule.
+
 ### The do-nothing reward baseline
 
 What a policy that never moves collects, Monte-Carlo over the configured command
@@ -85,6 +140,10 @@ distribution:
 | $[-0.5,1.0],[-0.3,0.3],[-0.6,0.6]$ | 0.25 | 0.62 |
 | **$[-0.5,1.0],[-0.3,0.3],[-0.6,0.6]$** | **0.20** | **0.57** |
 | $[-1.0,1.5],[-0.7,0.7],[-1.5,1.5]$ | 0.20 | 0.30 |
+
+The shipped configuration, after the B20 feasibility clamp, sits at **0.571**
+against a promotion threshold of 0.85 — reported by `scripts/check_env.py`
+before every run.
 
 The first row is what this repository originally shipped, against a curriculum
 promotion threshold of 0.85. A statue scored 0.79.
@@ -223,8 +282,8 @@ training anything.
 
 ### Status
 
-At the time of writing, a 15M-step run is in progress on the development machine
-(about 6.5 hours at 616 steps/s). **The final policy numbers are not filled in
+At the time of writing, a 20M-step run is in progress on the development machine
+(about 8.8 hours at 631 steps/s). **The final policy numbers are not filled in
 here, and should not be, until that run completes and `make evaluate-grid` has
 been executed against the checkpoint.**
 

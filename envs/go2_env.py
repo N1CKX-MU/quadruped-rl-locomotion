@@ -101,7 +101,7 @@ class Go2Env(gym.Env):
         self,
         xml_path="mujoco_menagerie/unitree_go2/scene.xml",
         decimation=10,
-        action_scale=0.30,
+        action_scale=0.40,
         kp=55.0,
         kd=1.4,
         max_episode_steps=1000,
@@ -115,6 +115,9 @@ class Go2Env(gym.Env):
         stand_probability=0.10,
         command_resample_interval_s=5.0,
         gaits=("trot",),
+        max_speed_per_hz=0.40,
+        max_speed=1.0,
+        feasibility_margin=0.85,
         # Reward
         reward_weights=None,
         lin_vel_sigma=0.20,
@@ -221,11 +224,18 @@ class Go2Env(gym.Env):
         )
 
         # ---- Commands and gait -------------------------------------------- #
+        # Measured, not assumed: the command sampler uses this to refuse to ask
+        # for speeds the leg geometry cannot deliver at the sampled gait
+        # frequency (bug B20).
+        self.max_stride_length = self.measure_stride_length()
         self.command_sampler = CommandSampler(
             ranges=command_ranges or CommandRanges(),
             stand_probability=stand_probability,
             resample_interval_s=command_resample_interval_s,
             gaits=tuple(gaits),
+            max_speed_per_hz=max_speed_per_hz,
+            max_speed=max_speed,
+            feasibility_margin=feasibility_margin,
         )
         self.command = Command()
         self.gait_phase = 0.0
@@ -323,6 +333,55 @@ class Go2Env(gym.Env):
         score = float(np.mean(self._tracking_scores))
         self._tracking_scores.clear()
         return score
+
+    def measure_stride_length(self, samples=41, z_tolerance=0.03):
+        """Measure how far a planted foot can travel fore-aft, in metres.
+
+        During stance the foot is planted and the BODY moves over it, so this
+        excursion IS the stride length available per step. With no flight phase
+        (duty >= 0.5) the achievable speed is therefore bounded by
+
+            v_max  =  stride_length  x  gait_frequency
+
+        Measuring it rather than assuming it matters, because the bound is
+        tight: at action_scale 0.30 the excursion is 0.22 m, which caps the
+        robot at 0.44 m/s at 2 Hz. A command envelope reaching 1.5 m/s asks for
+        a 0.75 m stride from a 0.43 m leg - the same class of mistake as bug B1,
+        just quantitative rather than absolute. See docs/14, B20.
+
+        Kinematics only, on a scratch MjData, once at construction.
+        """
+        data = mujoco.MjData(self.model)
+        thigh_jnt = int(self.actuated_joint_ids[1])
+        calf_jnt = int(self.actuated_joint_ids[2])
+        t_lo, t_hi = self.model.jnt_range[thigh_jnt]
+        c_lo, c_hi = self.model.jnt_range[calf_jnt]
+        gid = int(self.foot_geom_ids[0])
+
+        thigh_adr = int(self.model.jnt_qposadr[thigh_jnt])
+        calf_adr = int(self.model.jnt_qposadr[calf_jnt])
+
+        def foot_xz(dth, dca):
+            mujoco.mj_resetDataKeyframe(self.model, data, self._home_key_id)
+            data.qpos[thigh_adr] += dth
+            data.qpos[calf_adr] += dca
+            mujoco.mj_kinematics(self.model, data)
+            p = data.geom_xpos[gid] - data.xpos[self.base_body_id]
+            return p[0], p[2]
+
+        z0 = foot_xz(0.0, 0.0)[1]
+        a = self.action_scale
+        xs = []
+        for dth in np.linspace(-a, a, samples):
+            if not (t_lo <= self.default_joint_pos[1] + dth <= t_hi):
+                continue
+            for dca in np.linspace(-a, a, samples):
+                if not (c_lo <= self.default_joint_pos[2] + dca <= c_hi):
+                    continue
+                x, z = foot_xz(dth, dca)
+                if abs(z - z0) < z_tolerance:
+                    xs.append(x)
+        return float(max(xs) - min(xs)) if xs else 0.0
 
     def _apply_gait(self, name):
         self._gait_offsets, self._gait_duty = gait_mod.gait_params(name)

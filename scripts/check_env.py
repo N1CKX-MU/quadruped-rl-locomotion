@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import yaml  # noqa: E402
 
-from envs.go2_env import Go2Env  # noqa: E402
+from envs.commands import ranges_from_config  # noqa: E402
 from envs.gait import desired_contact, gait_params  # noqa: E402
+from envs.go2_env import Go2Env  # noqa: E402
 
 
 def section(title):
@@ -35,15 +36,29 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="configs/training_config.yaml")
     p.add_argument("--steps", type=int, default=1000)
+    p.add_argument("--ranges", choices=("initial", "final"), default="initial",
+                   help="Which command ranges to check. 'initial' is what the "
+                        "curriculum starts from and is the one that decides "
+                        "whether the task is learnable at all.")
     args = p.parse_args()
 
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
     env_cfg = dict(config["environment"])
-    env_cfg["reward_weights"] = (config.get("reward") or {}).get("weights")
-    env_cfg["randomize_dynamics"] = False
-    env_cfg["push_enabled"] = False
+    cmd_cfg = config.get("commands", {}) or {}
+    # Build the env exactly as training would, so the checks below report the
+    # command distribution the policy will actually see.
+    env_cfg.update(
+        reward_weights=(config.get("reward") or {}).get("weights"),
+        command_ranges=ranges_from_config(cmd_cfg.get(args.ranges)),
+        stand_probability=cmd_cfg.get("stand_probability", 0.10),
+        command_resample_interval_s=cmd_cfg.get("resample_interval_s", 5.0),
+        gaits=tuple(cmd_cfg.get("gaits", ["trot"])),
+        feasibility_margin=cmd_cfg.get("feasibility_margin", 0.85),
+        randomize_dynamics=False,
+        push_enabled=False,
+    )
     env = Go2Env(**env_cfg)
 
     section("Model")
@@ -87,6 +102,65 @@ def main():
         print("mean feet down  : %.2f / 4" % np.mean(contacts[50:]))
         print("verdict         : %s"
               % ("OK" if h.std() < 0.02 and h.mean() > 0.2 else "UNSTABLE"))
+
+    section("Speed envelope (bug B20)")
+    stride = env.max_stride_length
+    sampler = env.command_sampler
+    cr = sampler.ranges
+    margin = sampler.feasibility_margin
+    print("action scale        : %.2f rad" % env.action_scale)
+    print("PD offset torque    : %.1f Nm at |action|=1 (limit %.1f)"
+          % (env.kp * env.action_scale, env.torque_limits[0]))
+    print("stance foot travel  : %.1f cm  (static kinematic sweep)" % (stride * 100))
+    print()
+    print("The static sweep is a LOWER bound - body pitch, foot roll and dynamic")
+    print("effects add stride it cannot see. The sampler uses measured limits:")
+    print("  max_speed_per_hz  : %s" % sampler.max_speed_per_hz)
+    print("  max_speed         : %s" % sampler.max_speed)
+    print("  margin            : %.2f" % margin)
+    print()
+    print("%-9s %12s %14s" % ("frequency", "static bound", "sampler limit"))
+    for f in (1.5, 2.0, 2.5, 3.0):
+        v = float("inf")
+        if sampler.max_speed_per_hz:
+            v = sampler.max_speed_per_hz * f
+        if sampler.max_speed:
+            v = min(v, sampler.max_speed)
+        print("%7.1f Hz %11.2f %14.2f" % (f, stride * f, v * margin))
+    asked = max(abs(cr.lin_vel_x[0]), abs(cr.lin_vel_x[1]))
+    v = float("inf")
+    if sampler.max_speed_per_hz:
+        v = sampler.max_speed_per_hz * cr.gait_frequency[1]
+    if sampler.max_speed:
+        v = min(v, sampler.max_speed)
+    reachable = v * margin
+    print()
+    print("configured |vx| range: %.2f m/s" % asked)
+    print("sampler will ask up to %.2f m/s at %.1f Hz"
+          % (reachable, cr.gait_frequency[1]))
+    if asked > reachable + 1e-6:
+        print("NOTE: commands are clamped to the reachable value, so nothing")
+        print("      infeasible is ever issued - the configured range is simply")
+        print("      wider than the robot can use.")
+    else:
+        print("verdict             : every configured command is reachable")
+
+    section("Do-nothing baseline")
+    rng2 = np.random.default_rng(0)
+    cmds = [env.command_sampler.sample(rng2) for _ in range(20000)]
+    vecs = np.array([c.vec for c in cmds])
+    lin_err = np.linalg.norm(vecs[:, :2], axis=1)
+    ang_err = np.abs(vecs[:, 2])
+    score = (0.5 * np.exp(-lin_err ** 2 / env.lin_vel_sigma)
+             + 0.5 * np.exp(-ang_err ** 2 / env.ang_vel_sigma))
+    print("What a policy that never moves scores on the tracking terms, over the")
+    print("configured command distribution. If this is close to the curriculum's")
+    print("promotion threshold, the standing local optimum is unavoidable.")
+    print()
+    print("do-nothing tracking score : %.3f" % score.mean())
+    print("curriculum promotes above : 0.85")
+    print("verdict                   : %s"
+          % ("OK" if score.mean() < 0.70 else "TOO HIGH - see docs/10, 10.4"))
 
     section("Gait schedule")
     offsets, duty = gait_params("trot")
