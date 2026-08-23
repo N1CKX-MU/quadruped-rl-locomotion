@@ -98,6 +98,11 @@ class RewardState:
     # Target height for a swing foot, metres. See feet_clearance().
     target_foot_clearance: float = 0.08
 
+    # Scheduled swing duration, seconds: (1 - duty) / gait_frequency. The
+    # environment computes it from the ACTIVE gait command, which is what makes
+    # feet_air_time consistent with the gait the policy was asked for.
+    target_swing_time: float = 0.25
+
 
 # --------------------------------------------------------------------------- #
 #  Task terms: what we actually want the robot to do                          #
@@ -152,20 +157,41 @@ def gait_phase(s):
 
 
 def feet_air_time(s):
-    """Reward long swing phases, credited on touchdown. Can be negative.
+    """Reward genuine swing time, credited on touchdown. Non-negative.
 
-        r = sum_i (t_air_i - 0.5) * first_contact_i     [gated on ||cmd|| > 0.1]
+        r = 1[||cmd|| > 0.1] * sum_i min(t_air_i, t_swing) * first_contact_i
 
     Without this the cheapest way to satisfy the gait schedule is a rapid,
-    tiny-amplitude shuffle: contacts toggle on cue, but the robot barely moves
-    and the feet never really leave the ground. Paying for *airtime* forces
-    genuine strides. The 0.5 s offset makes short hops cost rather than pay.
+    tiny-amplitude shuffle: contacts toggle on cue, the robot barely moves, and
+    the feet never really leave the ground. Paying for airtime forces genuine
+    strides.
 
-    Gated on a non-zero command, otherwise it bribes a standing robot to fidget.
+    The credit SATURATES at the scheduled swing duration rather than being
+    offset by a constant, and that detail matters more than it looks. The
+    obvious formulation, inherited from legged_gym, is
+
+        sum_i (t_air_i - 0.5) * first_contact_i
+
+    which pays for air time beyond half a second. That is fine when the gait
+    frequency is emergent and slow. It is actively wrong here, because the gait
+    frequency is a COMMAND: at 2 Hz with duty 0.5 the scheduled swing time is
+    0.25 s, so every correctly-timed step scores (0.25 - 0.5) = -0.25. Summed
+    over four feet at two touchdowns a second and weighted, that came to
+    -0.08 per control step - against a total reward of about +0.03 for standing
+    still. The reward function made a perfect trot strictly worse than doing
+    nothing, and the policy correctly chose to do nothing.
+
+    The saturating form is non-negative, so early imperfect steps are never
+    punished, and its maximum rate is 4 * (1 - duty) per second independent of
+    the commanded frequency - so raising the step rate does not inflate the
+    reward.
+
+    Gated on a non-zero command, or it bribes a standing robot to fidget.
     """
     xp = _backend(s.feet_air_time)
     moving = xp.where(xp.linalg.norm(s.cmd) > 0.1, 1.0, 0.0)
-    return xp.sum((s.feet_air_time - 0.5) * s.feet_first_contact) * moving
+    credited = xp.minimum(s.feet_air_time, s.target_swing_time)
+    return xp.sum(credited * s.feet_first_contact) * moving
 
 
 def feet_clearance(s):
@@ -343,7 +369,7 @@ DEFAULT_WEIGHTS = {
     "track_ang_vel_yaw": 0.75,
     "gait_phase": 1.5,
     "feet_clearance": -30.0,
-    "feet_air_time": 2.0,
+    "feet_air_time": 1.0,
     "alive": 0.25,
     "lin_vel_z": -2.0,
     "ang_vel_xy": -0.05,

@@ -114,19 +114,43 @@ def test_gait_phase_is_bounded():
         assert 0.0 <= R.gait_phase(make_state(contact=c, desired_contact=d)) <= 1.0
 
 
-def test_feet_air_time_pays_for_long_strides_and_charges_for_hops():
+def test_feet_air_time_pays_more_for_longer_swings():
     moving = dict(cmd=np.array([1.0, 0.0, 0.0]),
                   feet_first_contact=np.array([1.0, 0.0, 0.0, 0.0]))
-    long_stride = make_state(feet_air_time=np.array([0.8, 0, 0, 0]), **moving)
-    short_hop = make_state(feet_air_time=np.array([0.1, 0, 0, 0]), **moving)
-    assert R.feet_air_time(long_stride) > 0.0
-    assert R.feet_air_time(short_hop) < 0.0
+    long_stride = make_state(feet_air_time=np.array([0.20, 0, 0, 0]), **moving)
+    short_hop = make_state(feet_air_time=np.array([0.05, 0, 0, 0]), **moving)
+    assert R.feet_air_time(long_stride) > R.feet_air_time(short_hop) > 0.0
+
+
+def test_feet_air_time_is_never_negative():
+    """Bug B19: with a constant 0.5 s offset this term was negative for EVERY
+    correctly-timed step at the commanded gait frequency, making a perfect trot
+    score worse than standing still. It must never punish a real step."""
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        s = make_state(cmd=np.array([1.0, 0.0, 0.0]),
+                       feet_air_time=rng.uniform(0.0, 1.0, size=4),
+                       feet_first_contact=rng.integers(0, 2, size=4).astype(float),
+                       target_swing_time=float(rng.uniform(0.05, 0.5)))
+        assert R.feet_air_time(s) >= 0.0
+
+
+def test_feet_air_time_saturates_at_the_scheduled_swing_time():
+    """Credit stops at the scheduled swing duration, so raising the step rate
+    cannot inflate the reward and hanging a foot in the air earns nothing extra."""
+    moving = dict(cmd=np.array([1.0, 0.0, 0.0]),
+                  feet_first_contact=np.array([1.0, 0.0, 0.0, 0.0]),
+                  target_swing_time=0.25)
+    at_target = make_state(feet_air_time=np.array([0.25, 0, 0, 0]), **moving)
+    way_over = make_state(feet_air_time=np.array([2.0, 0, 0, 0]), **moving)
+    assert R.feet_air_time(at_target) == pytest.approx(0.25)
+    assert R.feet_air_time(way_over) == pytest.approx(0.25)
 
 
 def test_feet_air_time_is_off_when_told_to_stand():
     """Otherwise it bribes a stationary robot into fidgeting."""
     s = make_state(cmd=np.zeros(3),
-                   feet_air_time=np.array([0.8, 0, 0, 0]),
+                   feet_air_time=np.array([0.2, 0, 0, 0]),
                    feet_first_contact=np.array([1.0, 0, 0, 0]))
     assert R.feet_air_time(s) == pytest.approx(0.0)
 

@@ -107,7 +107,7 @@ promotion threshold of 0.85. A statue scored 0.79.
 
 ### Test suite
 
-67 tests, all passing: quaternion transforms against MuJoCo's own
+69 tests, all passing: quaternion transforms against MuJoCo's own
 `mju_rotVecQuat`, the Euler convention, gait-schedule periodicity and duty
 factors, every reward term's sign and bounds, observation shape and finiteness,
 command conditioning, contact detection, and Gymnasium API compliance via SB3's
@@ -198,10 +198,33 @@ From [chapter 13, §13.4](13-training-diagnostics.md), for the default config at
 credited only on touchdown, so a non-zero value is the first proof that a foot
 has genuinely left the ground.
 
+### Reward shaping, verified without training
+
+One measurement that *is* complete, and that gates everything above. Under the
+final reward, a scripted open-loop trot is compared against zero action, per
+control step:
+
+| term | standing | scripted trot | diff |
+|---|---|---|---|
+| `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
+| `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
+| `feet_air_time` | $\phantom{+}0.00000$ | $+0.00056$ | $+0.00056$ |
+| `torques` | $-0.00074$ | $-0.00292$ | $-0.00218$ |
+| `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
+| `feet_slip` | $-0.00000$ | $-0.00085$ | $-0.00085$ |
+
+Stepping pays about $+0.012$ per step gross and $+0.007$ net of its costs,
+before any credit for locomotion; tracking 0.8 m/s adds a further $+0.029$.
+
+Before the B19 fix the `feet_air_time` row read $-0.08$ per step, and a perfect
+trot scored roughly four times worse than standing still. That single number is
+why three successive runs stalled, and it was measurable in minutes without
+training anything.
+
 ### Status
 
-At the time of writing, a 12M-step run is in progress on the development machine
-(about 5.5 hours at 616 steps/s). **The final policy numbers are not filled in
+At the time of writing, a 15M-step run is in progress on the development machine
+(about 6.5 hours at 616 steps/s). **The final policy numbers are not filled in
 here, and should not be, until that run completes and `make evaluate-grid` has
 been executed against the checkpoint.**
 
@@ -231,6 +254,8 @@ come from an actual evaluation run rather than from an expectation.
 - The v2 environment can express a trot: a hand-written open-loop controller
   reaches 0.78 schedule match with no learning at all.
 - Environment throughput doubled after profiling.
+- Under the final reward, a scripted trot out-scores standing on the stepping
+  terms; under the reward as it stood before B19, it did not.
 
 **Not yet established:** that the v2 *policy* tracks commands well. That
 requires the training run to finish and the evaluation to be run. Until then

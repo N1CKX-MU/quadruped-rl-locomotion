@@ -325,6 +325,39 @@ ask what its **derivative with respect to the behaviour you want** is, in the
 region the policy currently occupies. If the answer is zero, that term cannot
 teach the behaviour no matter how heavily it is weighted.
 
+## 13.5c A third diagnosis: score the target behaviour directly
+
+Two fixes in, the run still would not step. At that point the useful move is not
+another reward tweak — it is to stop reasoning about gradients and **measure what
+the reward actually pays for the behaviour you want**.
+
+That is a twenty-line experiment. Drive the environment with a hand-scripted
+trot, drive it again with zero action, and print the per-term reward difference:
+
+| term | standing | scripted trot | diff |
+|---|---|---|---|
+| `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
+| `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
+| `feet_air_time` | $\phantom{+}0.00000$ | $+0.00056$ | $+0.00056$ |
+| `torques` | $-0.00074$ | $-0.00292$ | $-0.00218$ |
+| `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
+
+Before the fix, the `feet_air_time` row read $-0.08$ per step. The term's 0.5 s
+offset — borrowed from legged_gym, where the gait frequency is emergent — is
+larger than the scheduled swing time of 0.25 s at the commanded 2 Hz, so it was
+negative for **every correctly-timed step**. A perfect trot scored roughly four
+times worse than standing still (chapter 14, B19).
+
+The general procedure, and the one worth internalising:
+
+> **Score the target behaviour under your reward and compare it against the
+> trivial policy.** If the thing you want does not out-score doing nothing, the
+> problem is not exploration, not the learning rate, and not the algorithm. No
+> optimiser will find a behaviour your objective penalises.
+
+It takes minutes, it needs no training, and it would have caught all three of
+the stalls in this repository's history.
+
 ## 13.6 Sanity checks before you start
 
 `scripts/check_env.py` runs all of these in about ten seconds:

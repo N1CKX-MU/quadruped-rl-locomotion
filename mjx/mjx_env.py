@@ -352,6 +352,8 @@ class Go2MJXEnv:
             dt=self.dt,
             lin_vel_sigma=self.lin_vel_sigma,
             ang_vel_sigma=self.ang_vel_sigma,
+            target_swing_time=(1.0 - self.gait_duty)
+            / jnp.maximum(state["gait_freq"], 1e-3),
         )
         total, terms = reward_mod.compute(rstate, self.weights)
         reward = total * self.dt

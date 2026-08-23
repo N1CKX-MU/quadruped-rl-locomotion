@@ -129,7 +129,13 @@ reward:
     # continuous, so this pulls the swing foot up from the first millimetre.
     # A 1.1M-step run stalled in the standing optimum without it.
     feet_clearance: -30.0
-    feet_air_time: 2.0           # forces real strides, not a shuffle
+    # Credit saturates at the SCHEDULED swing time rather than being offset by
+    # a constant 0.5 s. With a commanded gait frequency the constant-offset form
+    # (inherited from legged_gym) is negative for every correctly-timed step:
+    # at 2 Hz, duty 0.5, swing is 0.25 s, so each touchdown scored -0.25 and a
+    # perfect trot came to -0.08/step against +0.03 for standing still. The
+    # reward made the target behaviour worse than doing nothing.
+    feet_air_time: 1.0           # forces real strides, not a shuffle
     alive: 0.25                  # small: v1's 0.5 taught it to stand still
     # --- regularisation ---
     lin_vel_z: -2.0

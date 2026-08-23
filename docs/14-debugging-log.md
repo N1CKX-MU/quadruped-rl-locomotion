@@ -1,8 +1,8 @@
 # 14. The debugging log
 
-Eighteen defects, with the reasoning that found each one and the evidence that
+Nineteen defects, with the reasoning that found each one and the evidence that
 confirmed it. Sixteen were in the v1 environment and training script; the last
-two (B17, B18) were found in v2 and are included because they were found the
+three (B17, B18, B19) were found in v2 and are included because they were found the
 same way and illustrate the method better than anything else here.
 
 This is the most useful chapter in the book, for a reason that is worth stating
@@ -666,6 +666,109 @@ it and reward that too.
 
 ---
 
+## B19 — The stride reward made a correct trot worse than standing (found in v2)
+
+The third and final stall, and the most instructive of the three, because the
+bug was a **borrowed convention that stopped being true** once the environment
+changed.
+
+### The term
+
+```python
+def feet_air_time(s):
+    moving = xp.where(xp.linalg.norm(s.cmd) > 0.1, 1.0, 0.0)
+    return xp.sum((s.feet_air_time - 0.5) * s.feet_first_contact) * moving
+```
+
+Straight from legged_gym: pay for air time beyond half a second, credited at
+touchdown, so that long strides beat a shuffle.
+
+### The evidence
+
+Work out what a **perfect** trot scores. At the commanded 2 Hz with duty 0.5,
+the scheduled swing time per foot is
+
+$$
+t_\text{swing} = \frac{1 - \beta}{f} = \frac{0.5}{2} = 0.25\ \text{s}
+$$
+
+Every touchdown therefore scores $(0.25 - 0.5) \times 2.0 = -0.5$. Four feet at
+two touchdowns per second is eight events, so $-4.0$ per second, and at
+$\Delta t = 0.02$:
+
+$$
+-0.08\ \text{per control step}
+$$
+
+against a total reward of $+0.03$ per step for standing perfectly still.
+
+**The reward function made a flawless trot score roughly four times worse than
+doing nothing.** The policy was not failing to find the gait. It had found it,
+evaluated it, and correctly rejected it.
+
+The 0.5 s offset is a sensible constant in legged_gym, where the gait frequency
+is *emergent* and the resulting strides are long. It became wrong the moment
+this repository made gait frequency a **commanded input**: the constant no
+longer bears any relation to the swing duration the schedule is asking for.
+
+### The fix
+
+Credit air time up to the scheduled swing duration, rather than offsetting it by
+a constant:
+
+$$
+r = \mathbb{1}\big[\|\mathbf{c}\| > 0.1\big] \sum_{i=1}^{4} \min\!\big(t^\text{air}_i,\ t_\text{swing}\big)\, \mathbb{1}[\text{foot } i \text{ just landed}]
+$$
+
+with $t_\text{swing} = (1 - \beta)/f$ computed from the **active gait command**.
+
+Three properties, all of which the old form lacked:
+
+- **Non-negative.** Early, imperfect steps are never punished — and those are
+  the only route to good ones.
+- **Saturating.** Hanging a foot in the air beyond its scheduled swing earns
+  nothing extra, so it cannot fight the phase schedule.
+- **Frequency-independent.** The maximum rate is $4(1-\beta)$ per second
+  regardless of $f$, so commanding a faster gait does not inflate the reward.
+
+### Measured effect
+
+Scripted open-loop trot versus standing still, under the actual environment
+reward, per control step:
+
+| term | standing | trot | diff |
+|---|---|---|---|
+| `gait_phase` | $+0.01500$ | $+0.02343$ | $+0.00843$ |
+| `feet_clearance` | $-0.00601$ | $-0.00314$ | $+0.00288$ |
+| `feet_air_time` | $\phantom{+}0.00000$ | $+0.00056$ | $+0.00056$ |
+| `torques` | $-0.00074$ | $-0.00292$ | $-0.00218$ |
+| `ang_vel_xy` | $-0.00000$ | $-0.00147$ | $-0.00147$ |
+| `feet_slip` | $-0.00000$ | $-0.00085$ | $-0.00085$ |
+
+Stepping now pays about $+0.012$ per step gross and $+0.007$ net of its costs,
+*before* any credit for actually moving. Tracking 0.8 m/s is worth a further
+$+0.029$, so a competent trot beats standing by roughly $+0.036$ per step —
+more than doubling the standing reward.
+
+(The scripted controller in that table only reaches 0.041 m/s, so it collects
+almost none of the tracking reward and still loses narrowly overall. That is a
+limitation of a hand-written open-loop gait, not of the reward.)
+
+### Lesson
+
+**A borrowed hyperparameter carries the assumptions of the codebase it came
+from.** The 0.5 s offset encodes "strides are long because the frequency is
+emergent". Import it into an environment where frequency is commanded and it
+silently inverts the sign of the term for the exact behaviour you are trying to
+produce.
+
+The general check, and it is cheap: **evaluate your reward on a hand-scripted
+version of the target behaviour and compare it against the trivial policy.** If
+the behaviour you want does not score higher than doing nothing, no algorithm
+will find it, and you will spend days blaming exploration.
+
+---
+
 ## Things that were checked and were *not* bugs
 
 Recording these matters as much as recording the bugs. A debugging log that only
@@ -714,6 +817,7 @@ were wrong.
 | B16 | `mujoco.viewer` not imported | `render("human")` crashed |
 | B17 | Marginal swing clearance (v2) | No foot lift |
 | B18 | Stepping reward was piecewise constant (v2) | **No gradient toward stepping** |
+| B19 | Stride reward made a correct trot score worse than standing (v2) | **Target behaviour was penalised** |
 
 The through-line: **not one of these announced itself.** Every one had to be
 found by asking what would have to be true for the code to be right, and then

@@ -74,16 +74,19 @@ $$
 A cost on how far each *swing* foot is from a target height. §10.4b explains why
 this term, rather than `gait_phase`, is what makes stepping discoverable.
 
-**`feet_air_time`** — weight $+2.0$
+**`feet_air_time`** — weight $+1.0$
 
 $$
-r = \mathbb{1}\big[\|\mathbf{c}\| > 0.1\big] \sum_{i=1}^{4} (t^{\text{air}}_i - 0.5) \, \mathbb{1}[\text{foot } i \text{ just landed}]
+r = \mathbb{1}\big[\|\mathbf{c}\| > 0.1\big] \sum_{i=1}^{4} \min\!\big(t^{\text{air}}_i,\ t_{\text{swing}}\big) \, \mathbb{1}[\text{foot } i \text{ just landed}]
 \tag{10.4}
 $$
 
-Credited only on touchdown. The $-0.5$ s offset means short hops cost and real
-strides pay. Gated on a non-zero command, or it bribes a standing robot to
-fidget.
+with $t_{\text{swing}} = (1 - \beta)/f$ taken from the active gait command.
+Credited only on touchdown; non-negative; saturating at the scheduled swing
+duration. Gated on a non-zero command, or it bribes a standing robot to fidget.
+
+The obvious formulation — $\sum_i (t^{\text{air}}_i - 0.5)$, which is what
+legged_gym uses — is **actively wrong here**, and §10.4c works through why.
 
 **`alive`** — weight $+0.25$
 
@@ -263,6 +266,61 @@ quantity — a contact flag, a success indicator, a boolean — is piecewise
 constant, and a policy cannot climb a staircase it cannot see the slope of.**
 Whenever a term is defined on a boolean, ask what continuous quantity underlies
 it, and reward that too.
+
+## 10.4c The third stall: a borrowed constant that inverted the sign
+
+Two stalls down, the run still would not step. This time the culprit was
+`feet_air_time`, and it is the most transferable of the three because the bug
+was a **borrowed convention that stopped being true**.
+
+The legged_gym form pays for air time beyond half a second:
+
+$$
+r = \sum_i \big(t^{\text{air}}_i - 0.5\big)\,\mathbb{1}[\text{foot } i \text{ just landed}]
+$$
+
+That is sensible where the gait frequency is *emergent* and the resulting
+strides are long. It is wrong the moment frequency becomes a **commanded
+input**. At the commanded 2 Hz with duty 0.5,
+
+$$
+t_{\text{swing}} = \frac{1-\beta}{f} = \frac{0.5}{2} = 0.25\ \text{s}
+$$
+
+so every touchdown scores $(0.25 - 0.5) \times 2.0 = -0.5$. Four feet at two
+touchdowns per second is $-4.0$ per second, or $-0.08$ per control step — against
+a total of $+0.03$ per step for standing perfectly still.
+
+**A flawless trot scored roughly four times worse than doing nothing.** The
+policy had not failed to find the gait. It had found it, evaluated it, and
+correctly rejected it.
+
+The fix credits air time *up to* the scheduled swing duration rather than
+offsetting it by a constant. Three properties follow, all of which the old form
+lacked:
+
+- **non-negative**, so early imperfect steps are never punished — and those are
+  the only route to good ones;
+- **saturating**, so hanging a foot in the air earns nothing extra and cannot
+  fight the phase schedule;
+- **frequency-independent**, with a maximum rate of $4(1-\beta)$ per second
+  whatever $f$ is, so commanding a faster gait does not inflate the reward.
+
+Measured afterwards — scripted trot minus standing, per control step:
+`gait_phase` $+0.0084$, `feet_clearance` $+0.0029$, `feet_air_time` $+0.0006$,
+against `torques` $-0.0022$, `ang_vel_xy` $-0.0015$, `feet_slip` $-0.0009$.
+Stepping now pays about $+0.007$ net *before* any credit for moving, and
+tracking 0.8 m/s adds a further $+0.029$.
+
+**The lesson: a borrowed hyperparameter carries the assumptions of the codebase
+it came from.** The 0.5 s constant encodes "strides are long because frequency
+is emergent"; import it into an environment where frequency is commanded and it
+silently inverts the sign of the term for the exact behaviour you want.
+
+And the check that catches it, which is cheap and general: **evaluate your
+reward on a hand-scripted version of the target behaviour, and compare it
+against the trivial policy.** If the thing you want does not out-score doing
+nothing, no algorithm will find it, and you will spend days blaming exploration.
 
 ## 10.5 v1's reward, and what it actually optimised
 
