@@ -90,7 +90,8 @@ legged_gym uses — is **actively wrong here**, and §10.4c works through why.
 
 **`alive`** — weight $+0.25$
 
-A constant. Small on purpose; §10.5 explains why v1's was four times too big.
+A constant. Small on purpose: v1 used 0.5, twice this, against a total positive
+reward of about 2.5 - and its own logs record the result. See §10.5.
 
 ### Regularisation terms
 

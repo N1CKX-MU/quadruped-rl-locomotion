@@ -269,13 +269,13 @@ $(v_x^*, v_y^*, \omega_z^*)$, and $\phi$ the gait phase.
 target is
 
 $$
-q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.25 \text{ rad}
+q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.40 \text{ rad}
 $$
 
 and a PD controller converts that to torque at each physics substep:
 
 $$
-\tau = k_p (q^* - q) - k_d \dot q, \qquad k_p = 40, \; k_d = 1
+\tau = k_p (q^* - q) - k_d \dot q, \qquad k_p = 55, \; k_d = 1.4
 \tag{1.6}
 $$
 
@@ -283,7 +283,7 @@ $$
 Stochastic across episodes because of randomised initial conditions, randomised
 friction and mass, and randomly-timed external pushes.
 
-**Reward**: sixteen weighted terms, summed and scaled by $\Delta t$. Chapter 10.
+**Reward**: seventeen weighted terms, summed and scaled by $\Delta t$. Chapter 10.
 
 **Discount**: $\gamma = 0.99$, i.e. a 2-second horizon.
 

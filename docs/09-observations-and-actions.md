@@ -210,25 +210,33 @@ first thing to add for sim-to-real (chapter 16).
 ## 9.9 The action space
 
 $$
-a \in [-1, 1]^{12}, \qquad q^* = q_\text{nom} + 0.25\, a
+a \in [-1, 1]^{12}, \qquad q^* = q_\text{nom} + 0.40\, a
 $$
 
 **Why position targets, not torques** — chapter 8, §8.5.
 
-**Why 0.25 rad?** It bounds how far the policy can move a joint in one control
-step. v1 used 0.5. Smaller is a real constraint on what the policy can do, and
-smaller is better here for a reason worth stating: the action scale sets the
-**maximum stiffness of the closed loop**. With $k_p = 40$ and $\alpha = 0.25$,
-the largest torque the policy can command from the nominal pose is
-$40 \times 0.25 = 10$ N·m, well inside the 23.7 N·m limit. Raise $\alpha$ and
-the policy gains the authority to saturate the actuators every step, which in
-simulation produces impressive-looking motion that no real robot can execute.
+**Why 0.40 rad?** The action scale is pulled in two directions at once, and the
+value is where they meet.
+
+*Upward*, because it sets the **stride length**, and therefore the top speed.
+During stance the foot is planted and the body moves over it, so the fore-aft
+travel available to a planted foot is the stride. Measured: 16 cm at
+$\alpha = 0.25$, 29 cm at 0.40. A scripted open-loop trot reaches 0.62 m/s at
+$\alpha = 0.30$ and 1.08 m/s at 0.40. Too small an action scale silently caps
+the robot below the speeds the command envelope asks for — bug B20.
+
+*Downward*, because it sets the **maximum stiffness of the closed loop**. The
+largest torque the policy can command away from the nominal pose is
+$k_p \times \alpha = 55 \times 0.40 = 22$ N·m, just inside the 23.7 N·m hip and
+thigh limit. Push $\alpha$ higher and the PD offset alone saturates the actuator
+every step, which in simulation produces impressive-looking motion that no real
+robot can execute.
 
 Note the interaction with bug B1. v1's action scale of 0.5 was not itself
 wrong — combined with a nominal calf angle of 0 rad it produced a reachable
 target set of $[-0.5, 0.5]$ against a joint limit of $[-2.723, -0.838]$: an
-empty intersection. Fixing the nominal pose is what makes a *smaller* action
-scale viable.
+empty intersection. The number was never the problem; the pose it was measured
+from was.
 
 **Clipping.** The environment clips the incoming action to $[-1,1]$ before using
 it. Nothing guarantees a Gaussian policy respects the box, and an unclipped
