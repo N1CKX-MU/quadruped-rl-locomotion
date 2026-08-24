@@ -176,7 +176,7 @@ Always check which kind your model has.
 The policy outputs **position targets**, not torques:
 
 $$
-q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.25\ \text{rad}
+q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.40\ \text{rad}
 $$
 
 and a joint-space PD law converts them:
@@ -215,18 +215,28 @@ sensible. Measured on this model (150 control steps, then average):
 |---|---|---|---|---|
 | 20 | 0.5 | 0.196 m | 7.4 cm | 8.8 N·m |
 | 25 | 0.6 | 0.206 m | 6.4 cm | 10.4 N·m |
-| **40** | **1.0** | **0.242 m** | **2.8 cm** | **8.0 N·m** |
+| 40 | 1.0 | 0.242 m | 2.8 cm | 8.0 N·m |
+| **55** | **1.4** | **0.254 m** | **1.6 cm** | — |
 | 60 | 1.5 | 0.256 m | 1.4 cm | 7.1 N·m |
 | 80 | 2.0 | 0.261 m | 0.9 cm | 6.8 N·m |
 
-v2 uses $k_p = 40$, $k_d = 1.0$ — enough authority to hold a commanded ride
-height without being so stiff that the policy can exploit contact impulses no
-real actuator could produce.
+v2 uses $k_p = 55$, $k_d = 1.4$. Sag matters more than it first appears: it is
+subtracted directly from the foot clearance available during swing, because
+while two legs retract the other two carry the whole robot and sag further
+(bug B17). $k_p = 80$ scores better still on paper and was rejected — that
+stiff, the policy starts exploiting contact impulses no real actuator could
+produce.
 
-These are v1's values. **v1's PD gains were never the problem.** It is worth
-saying explicitly, because when a system underperforms there is a temptation to
-change everything; the discipline is to change only what the evidence
-implicates.
+Note that $k_p = 40$, $k_d = 1.0$ are **v1's values**, and they were never the
+problem. The gains were raised for the separate, separately-measured reason
+above. When a system underperforms there is a temptation to change everything;
+the discipline is to change only what the evidence implicates.
+
+The action scale interacts with the gains through the torque limit:
+$k_p 	imes lpha = 55 	imes 0.40 = 22$ N·m against a 23.7 N·m hip and thigh
+limit, so at $|a| = 1$ the PD offset alone very nearly saturates the actuator.
+That is what caps $lpha$ at 0.40, and hence caps stride length and top speed
+(bug B20).
 
 ### The bug that *was* in the PD controller
 
