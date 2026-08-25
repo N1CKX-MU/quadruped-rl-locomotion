@@ -694,8 +694,10 @@ class Go2Env(gym.Env):
         self.step_count += 1
         self._time_since_command += self.dt
 
-        # Advance the gait clock before scoring, so the schedule the reward
-        # checks is the one the policy saw in its observation last step.
+        # Advance the gait clock BEFORE scoring, because the contacts about to
+        # be measured are the post-step ones. Scoring c(t+1) against the
+        # schedule at phi(t+1) is the consistent pairing; the policy saw phi(t)
+        # and can anticipate the advance, since the clock is deterministic.
         self.gait_phase = gait_mod.advance_phase(
             self.gait_phase, self.command.gait_frequency, self.dt
         )
@@ -716,16 +718,23 @@ class Go2Env(gym.Env):
         terminated = self._check_termination(trunk_touching)
         truncated = self.step_count >= self.max_episode_steps
 
+        # Build the diagnostics BEFORE resampling, so that info["gait"] and
+        # info["tracking_score"] describe the command the reward was actually
+        # computed against. Reporting the freshly-drawn command next to the
+        # previous command's reward would quietly corrupt the curriculum signal
+        # and the gait_fraction traces.
+        info = self._build_info(state, contacts)
+
         if self.command_sampler.should_resample(self._time_since_command):
             self.command = self.command_sampler.sample(self.np_random)
             self._apply_gait(self.command.gait)
             self._time_since_command = 0.0
 
+        # The observation, by contrast, must carry the NEW command - it is what
+        # the policy is being asked to act on next.
         self._prev_joint_vel[:] = self.data.qvel[6:]
         self.prev_action = action.copy()
         obs = self._get_obs()
-
-        info = self._build_info(state, contacts)
 
         if self.render_mode == "human":
             self.render()

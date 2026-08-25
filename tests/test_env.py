@@ -173,6 +173,25 @@ def test_commands_are_resampled_within_an_episode(env):
     assert len(seen) > 1
 
 
+def test_info_reports_the_command_the_reward_used(env):
+    """Diagnostics must describe the command the reward was computed against.
+
+    Commands are resampled mid-episode, and the new one goes into the NEXT
+    observation. If the info dict were built after the resample it would pair
+    the freshly-drawn command with the previous command's reward, which quietly
+    corrupts both the curriculum signal and the gait_fraction traces.
+    """
+    env.command_sampler.resample_interval_s = env.dt   # resample every step
+    env.reset(seed=11)
+    try:
+        for _ in range(20):
+            before = env.command.vec.copy()
+            _, _, _, _, info = env.step(np.zeros(12))
+            assert np.allclose(info["cmd"], before), (info["cmd"], before)
+    finally:
+        env.command_sampler.resample_interval_s = 5.0
+
+
 def test_sideways_command_is_expressible(env):
     """Bug B3 made this impossible: vy was untracked and all lateral motion was
     penalised, so a strafe command could never score well."""
