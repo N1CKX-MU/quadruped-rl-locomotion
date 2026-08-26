@@ -2,8 +2,14 @@
 
 Command-conditioned locomotion for the Unitree Go2 in MuJoCo, trained with PPO.
 The robot walks forwards, backwards and sideways, turns on the spot, holds a
-commanded body height, and follows a commandable gait schedule — trot, pace,
-bound or walk — at a commandable step frequency.
+commanded body height, and trots at a commandable step frequency — tracking
+velocity commands to **0.02 m/s** and yaw rate to **0.035 rad/s**, with a
+**100% survival rate** and a measured duty factor of exactly 0.500.
+
+The gait is a *phase schedule* the reward compares foot contacts against, so
+trot, pace, bound and walk are all expressible. The shipped checkpoint is
+trained on trot only — see [Results](#results) for what it does and does not
+do.
 
 There is a **book** in [`docs/`](docs/README.md) that derives all of this from
 scratch: the maths of reinforcement learning, the algorithm line by line, the
@@ -74,7 +80,7 @@ misrepresents how the work goes.
 |---|---|---|
 | Commands | one fixed forward speed | $(v_x, v_y, \omega_z)$, resampled every 5 s |
 | Directions | forward | forward, backward, strafe, turn, and combinations |
-| Gait | emergent, uncontrollable | commanded: trot / pace / bound / walk / pronk / stand |
+| Gait | emergent, uncontrollable | a commanded phase schedule; shipped policy trained on trot |
 | Step frequency | — | commandable, 1.5–3.0 Hz |
 | Command feasibility | n/a | every command clamped to a measured speed envelope |
 | Body height | — | commandable, 0.27–0.34 m |
@@ -208,11 +214,33 @@ So 10M steps is about 4.5 hours on this machine. For the two-orders-of-magnitude
 speedup and why it is architectural rather than algorithmic, see
 [`docs/17-mjx-and-scaling.md`](docs/17-mjx-and-scaling.md).
 
-**Policy performance** is measured with `make evaluate-grid`, which reports
-tracking error along each command axis rather than a single forward speed. A
-policy that only walks forwards scores well on $v_x$ and badly on $v_y$ and
-$\omega_z$ — which is exactly what the measurement is for. Current numbers are
-in [`docs/15-results.md`](docs/15-results.md).
+<a name="results"></a>
+**Policy performance.** 18.76M steps, 16 environments, ~8 hours. Measured over
+30 random commands from the trained envelope, 8 s each:
+
+| Metric | v2 | v1 |
+|---|---|---|
+| mean forward-velocity error | **0.021 m/s** | not measured (no command) |
+| mean lateral-velocity error | **0.028 m/s** | **not possible** |
+| mean yaw-rate error | **0.035 rad/s** | **not possible** |
+| survival rate | **100%** | fell after 277 of 1000 steps |
+| mean feet in contact | **2.00 / 4** | — |
+| gait schedule match | **96.0%** | n/a |
+| duty factor | **0.500** (reference 0.50) | n/a |
+
+Yaw tracking is essentially exact (commanded 1.50 rad/s, achieved 1.508).
+Combined commands work: $(0.80, 0, 0.80)$ gives $(0.795, -0.023, 0.765)$.
+
+**What it does not do**, stated plainly: it does **not** change gait on command.
+Asked for a pace or a bound it trots anyway, at 50% schedule match, which is
+chance. That is expected and predicted — the config ships `gaits: ["trot"]`, so
+the phase offsets were constant during training and the gait identity is not in
+the observation. Training a multi-gait policy needs the per-foot clock
+(`clock_signal` in `envs/gait.py`) and a wider `gaits` list; see
+[`docs/11`](docs/11-gaits-and-phase.md) §11.8. It is also not sim-to-real ready
+([`docs/16`](docs/16-sim-to-real.md)).
+
+Full tables in [`docs/15-results.md`](docs/15-results.md).
 
 ---
 

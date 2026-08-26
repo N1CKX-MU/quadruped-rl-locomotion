@@ -90,7 +90,7 @@ higher, because body pitch, foot roll on the spherical contact and dynamic
 effects add stride the fixed-base sweep cannot see. The sweep is a useful lower
 bound and a bad ceiling.
 
-`action_scale` stops at 0.40 because $k_p 	imes lpha = 22$ N·m against a
+`action_scale` stops at 0.40 because $k_p \times \alpha = 22$ N·m against a
 23.7 N·m hip and thigh actuator limit.
 
 ### Does a competent gait out-score doing nothing?
@@ -280,23 +280,95 @@ trot scored roughly four times worse than standing still. That single number is
 why three successive runs stalled, and it was measurable in minutes without
 training anything.
 
-### Status
+### Results
 
-At the time of writing, a 20M-step run is in progress on the development machine
-(about 8.8 hours at 631 steps/s). **The final policy numbers are not filled in
-here, and should not be, until that run completes and `make evaluate-grid` has
-been executed against the checkpoint.**
+Run: 18.76M steps, 16 environments, seed 0, about 8 hours at ~600 steps/s. The
+curriculum reached level 1.0 (full command envelope). Final
+`explained_variance` 0.93, policy std annealed from 0.37 to 0.18.
 
-To fill this section in:
+**Tracking, 30 random commands drawn from the trained envelope, 8 s each**
+(`make evaluate`):
 
-```bash
-make evaluate-grid > docs/results-grid.txt
-make evaluate      >> docs/results-grid.txt
-make gait-all
+| Metric | v2 | v1 |
+|---|---|---|
+| mean $\lvert v_x \rvert$ error | **0.021 m/s** | not measured (no command) |
+| mean $\lvert v_y \rvert$ error | **0.028 m/s** | **not possible** |
+| mean $\lvert \omega_z \rvert$ error | **0.035 rad/s** | **not possible** |
+| survival rate | **100%** | fell after 277 of 1000 steps |
+| mean body height | 0.275 m | — |
+| mean feet in contact | **2.00 / 4** | — |
+| action jerk | 0.152 | — |
+
+Two feet in contact out of four is exactly the duty factor of a trot, arrived at
+without being told directly.
+
+**Per-axis sweep** (`make evaluate-grid`), commanded versus achieved:
+
+| $v_x$ command | achieved | | $v_y$ command | achieved | | $\omega_z$ command | achieved |
+|---|---|---|---|---|---|---|---|
+| $-1.00$ | $-0.829$ | | $-0.50$ | $-0.395$ | | $-1.50$ | $-1.508$ |
+| $-0.75$ | $-0.714$ | | $-0.25$ | $-0.211$ | | $-1.00$ | $-1.006$ |
+| $-0.50$ | $-0.507$ | | $\phantom{-}0.25$ | $\phantom{-}0.240$ | | $-0.50$ | $-0.463$ |
+| $-0.25$ | $-0.234$ | | $\phantom{-}0.50$ | $\phantom{-}0.415$ | | $\phantom{-}0.50$ | $\phantom{-}0.519$ |
+| $\phantom{-}0.25$ | $\phantom{-}0.212$ | | $\phantom{-}0.75$ | $\phantom{-}0.492$ | | $\phantom{-}1.00$ | $\phantom{-}1.028$ |
+| $\phantom{-}0.50$ | $\phantom{-}0.453$ | | | | | $\phantom{-}1.50$ | $\phantom{-}1.511$ |
+| $\phantom{-}0.75$ | $\phantom{-}0.719$ | | | | | | |
+| $\phantom{-}1.00$ | $\phantom{-}0.936$ | | | | | | |
+| $\phantom{-}1.50$ | $\phantom{-}0.908$ | | | | | | |
+
+Yaw tracking is essentially exact. Forward tracking holds to within 0.07 m/s
+across the trained band and then saturates near 0.94 m/s — which is the right
+behaviour, because the trained envelope stops at 0.85 and the measured
+kinematic ceiling is about 1.08 (§15.1). The $\pm 0.75$ strafe commands are
+outside the trained $\pm 0.40$ range and degrade accordingly.
+
+Combined commands work: $(0.80, 0, 0.80)$ gives $(0.795, -0.023, 0.765)$ — a
+simultaneous forward-and-turn arc.
+
+**Gait** (`make gait-analysis`, command 0.7 m/s):
+
+```
+schedule match      : 96.0%
+foot                       duty  stride Hz phase (meas)  phase (ref)
+FL (front left)           0.480       2.00         0.00         0.00
+FR (front right)          0.520       2.00         0.48         0.50
+RL (rear left)            0.520       2.00         0.48         0.50
+RR (rear right)           0.480       2.00         0.00         0.00
+mean duty factor    : 0.500   (reference 0.50)
 ```
 
-and paste the tables. The v1 comparison is only meaningful if the v2 numbers
-come from an actual evaluation run rather than from an expectation.
+Duty factor 0.500 against a reference of 0.50, stride frequency exactly the
+commanded 2.00 Hz on every foot, and phase offsets within 0.02 of the trot
+reference. The phase-clock mechanism of chapter 11 does what it claims.
+
+### What this checkpoint does NOT do
+
+Stated plainly, because the mechanism supports it and this policy does not.
+
+**It does not change gait on command.** Asked for a pace, bound or walk, it
+trots anyway: schedule match drops to 50%, which is chance.
+
+That is expected, and chapter 11, §11.8 predicted it. The config ships
+`gaits: ["trot"]`, so the offsets were constant throughout training, and only
+the *global* clock is in the observation — the gait identity is not. The policy
+is being asked to satisfy a schedule it cannot see. Training a genuinely
+multi-gait policy needs the per-foot clock (`clock_signal` in `envs/gait.py`,
+eight numbers instead of two) and the wider `gaits` list.
+
+`scripts/gait_analysis.py` diagnoses this correctly and unprompted:
+
+```
+  - Poor schedule match: either gait_phase's weight is too low, or the
+    commanded frequency is outside what the policy was trained on.
+  - Measured phase offsets do not match the reference: the policy is running
+    a different gait from the one asked for.
+```
+
+**It has not been trained beyond 0.85 m/s**, and would need a larger action
+scale (and therefore a stiffer actuator budget) to go much faster.
+
+**It is not sim-to-real ready.** See chapter 16 — the actor still observes base
+linear velocity, which a real Go2 cannot measure.
 
 ## 15.4 What is honestly claimed
 
@@ -316,9 +388,13 @@ come from an actual evaluation run rather than from an expectation.
 - Under the final reward, a scripted trot out-scores standing on the stepping
   terms; under the reward as it stood before B19, it did not.
 
-**Not yet established:** that the v2 *policy* tracks commands well. That
-requires the training run to finish and the evaluation to be run. Until then
-this chapter says so.
+- The v2 policy tracks commands to 0.021 m/s, 0.028 m/s and 0.035 rad/s on the
+  three axes, over 30 random commands from the trained envelope, with a 100%
+  survival rate and a measured duty factor of exactly 0.500.
+
+**Not claimed:** that this checkpoint can change gait on command (it cannot -
+it was trained on trot alone and the gait identity is not in its observation),
+that it exceeds 0.85 m/s, or that it would transfer to hardware.
 
 ---
 

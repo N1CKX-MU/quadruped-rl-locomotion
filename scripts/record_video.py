@@ -71,6 +71,12 @@ def main():
     p.add_argument("--gait", default="trot")
     p.add_argument("--script", choices=("none", "demo"), default="demo")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--gif-stride", type=int, default=5,
+                   help="Keep every Nth frame in the GIF.")
+    p.add_argument("--gif-scale", type=int, default=2,
+                   help="Downsample the GIF by this factor in each axis. A "
+                        "full-resolution 20-second GIF is ~40 MB, which has no "
+                        "business being committed to a git repository.")
     args = p.parse_args()
 
     vecnorm = args.vec_normalize
@@ -123,8 +129,12 @@ def main():
     imageio.mimsave(args.output, frames, fps=fps)
     print("video saved: %s (%d frames, %d fps)" % (args.output, len(frames), fps))
     if args.gif:
-        imageio.mimsave(args.gif, frames[::3], fps=fps // 3, loop=0)
-        print("gif saved:   " + args.gif)
+        k, sc = max(args.gif_stride, 1), max(args.gif_scale, 1)
+        small = [f[::sc, ::sc] for f in frames[::k]]
+        imageio.mimsave(args.gif, small, fps=max(fps // k, 1), loop=0)
+        size_mb = os.path.getsize(args.gif) / 1e6
+        print("gif saved:   %s (%d frames, %.1f MB)"
+              % (args.gif, len(small), size_mb))
     env.close()
 
 
