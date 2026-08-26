@@ -185,6 +185,13 @@ def main():
     p.add_argument("--render", action="store_true")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu")
+    p.add_argument("--config", default="configs/training_config.yaml",
+                   help="Read the trained command envelope from here, so the "
+                        "random-command summary samples what the policy was "
+                        "actually trained on.")
+    p.add_argument("--full-envelope", action="store_true",
+                   help="Sample beyond the trained ranges, to measure how the "
+                        "policy degrades outside them.")
     args = p.parse_args()
 
     vecnorm = args.vec_normalize
@@ -209,14 +216,31 @@ def main():
             run_grid(env, predict, args)
             return
 
-        # Default: random commands from the full envelope.
+        # Random commands. By default these come from the config's trained
+        # ranges: sampling wider than the policy was trained on measures
+        # extrapolation, not tracking, and quietly inflates every error.
         rng = np.random.default_rng(args.seed)
+        vx_r, vy_r, yaw_r = (-1.0, 1.5), (-0.7, 0.7), (-1.5, 1.5)
+        if not args.full_envelope and os.path.exists(args.config):
+            import yaml
+
+            with open(args.config) as f:
+                final = ((yaml.safe_load(f).get("commands") or {}).get("final")
+                         or {})
+            vx_r = tuple(final.get("lin_vel_x", vx_r))
+            vy_r = tuple(final.get("lin_vel_y", vy_r))
+            yaw_r = tuple(final.get("ang_vel_yaw", yaw_r))
+        scope = ("  (FULL envelope - extrapolation)" if args.full_envelope
+                 else "  (trained ranges)")
+        print("sampling commands from vx%s vy%s yaw%s%s"
+              % (vx_r, vy_r, yaw_r, scope))
+        print()
         results = []
         for ep in range(args.episodes):
             cmd = (
-                float(rng.uniform(-1.0, 1.5)),
-                float(rng.uniform(-0.7, 0.7)),
-                float(rng.uniform(-1.5, 1.5)),
+                float(rng.uniform(*vx_r)),
+                float(rng.uniform(*vy_r)),
+                float(rng.uniform(*yaw_r)),
             )
             r = rollout(env, predict, cmd, args.steps, seed=args.seed + ep)
             r["cmd"] = cmd

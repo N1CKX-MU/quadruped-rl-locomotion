@@ -233,9 +233,9 @@ above. When a system underperforms there is a temptation to change everything;
 the discipline is to change only what the evidence implicates.
 
 The action scale interacts with the gains through the torque limit:
-$k_p 	imes lpha = 55 	imes 0.40 = 22$ N·m against a 23.7 N·m hip and thigh
+$k_p \times \alpha = 55 \times 0.40 = 22$ N·m against a 23.7 N·m hip and thigh
 limit, so at $|a| = 1$ the PD offset alone very nearly saturates the actuator.
-That is what caps $lpha$ at 0.40, and hence caps stride length and top speed
+That is what caps $\alpha$ at 0.40, and hence caps stride length and top speed
 (bug B20).
 
 ### The bug that *was* in the PD controller
