@@ -49,6 +49,7 @@ from mujoco import mjx
 from envs import gait as gait_mod
 from envs import rewards as reward_mod
 from envs.commands import CommandRanges
+from envs.go2_env import resolve_asset_path
 
 DEFAULT_XML = "mujoco_menagerie/unitree_go2/scene_mjx.xml"
 FOOT_GEOM_NAMES = ("FL", "FR", "RL", "RR")
@@ -101,7 +102,7 @@ class Go2MJXEnv:
         lin_vel_sigma: float = 0.20,
         ang_vel_sigma: float = 0.25,
     ):
-        self.mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        self.mj_model = mujoco.MjModel.from_xml_path(resolve_asset_path(xml_path))
         self.model = mjx.put_model(self.mj_model)
 
         self.decimation = decimation
