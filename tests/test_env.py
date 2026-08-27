@@ -99,6 +99,38 @@ def test_v1_nominal_pose_would_not_stand():
 # --------------------------------------------------------------------------- #
 
 
+def test_model_path_resolves_from_any_working_directory():
+    """Scripts must run when invoked by absolute path from anywhere.
+
+    The default xml_path is relative, so before this the whole repository was
+    only usable with the repo root as cwd; anywhere else you got MuJoCo's
+    "ParseXML: Error opening file", which names neither the file nor the reason.
+    """
+    import os
+
+    from envs.go2_env import resolve_asset_path
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(os.path.dirname(os.path.abspath(cwd)) or os.sep)
+        resolved = resolve_asset_path(XML)
+        assert os.path.exists(resolved), resolved
+        assert os.path.isabs(resolved)
+    finally:
+        os.chdir(cwd)
+
+
+def test_missing_model_says_where_it_looked():
+    from envs.go2_env import resolve_asset_path
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        resolve_asset_path("mujoco_menagerie/does_not_exist/scene.xml")
+    message = str(excinfo.value)
+    assert "current directory" in message
+    assert "repository root" in message
+    assert "mujoco_menagerie.git" in message   # tells you how to fix it
+
+
 def test_observation_matches_the_declared_space(env):
     obs, _ = env.reset(seed=1)
     assert obs.shape == env.observation_space.shape
