@@ -14,6 +14,8 @@ do.
 There is a **book** in [`docs/`](docs/README.md) that derives all of this from
 scratch: the maths of reinforcement learning, the algorithm line by line, the
 robot, the reward design, and a debugging log of every defect found on the way.
+[`docs/WORKLOG.md`](docs/WORKLOG.md) is the running record of what has been done
+and what is next.
 
 ```bash
 git clone https://github.com/N1CKX-MU/quadruped-rl-locomotion.git
