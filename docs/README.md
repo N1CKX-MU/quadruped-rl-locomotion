@@ -14,6 +14,12 @@ Where the maths and the code correspond, the correspondence is made explicit:
 equations are numbered, and `ppo_from_scratch/ppo.py` carries comments like
 `(Eq 5.4)` pointing back here.
 
+**Looking for the current state rather than the explanation?**
+[`WORKLOG.md`](WORKLOG.md) is the running record: what works today, what is
+measured, the decision log, open items, and the traps specific to this machine.
+Start there if you are returning to the project; start here if you want to
+understand it.
+
 ## How to read this
 
 If you want to **understand the algorithm**, read 1 through 6 in order. That is
