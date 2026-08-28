@@ -34,7 +34,8 @@ If you want to **understand what went wrong and how it was found**, read 14. It
 is the debugging log for the v1 → v2 rewrite, and it is the most practically
 useful chapter in the book. It is also the honest one: every bug listed there
 was really in the code, and several of them were subtle enough to survive five
-documented training runs.
+documented training runs. Four of the twenty were mine, introduced during the
+v2 rewrite and caught the same way.
 
 If you are **about to start a training run**, read 13 first. It tells you what
 the TensorBoard traces mean and which failure each one indicates, which is the
@@ -60,7 +61,7 @@ difference between debugging in an afternoon and debugging in a week.
 |---|---------|----------------|
 | 8 | [The Go2, MuJoCo, and PD control](08-the-robot.md) | Kinematics, the MJCF model, torque actuators, the PD law, and why the `home` keyframe matters |
 | 9 | [Observations and actions](09-observations-and-actions.md) | Every one of the 50 observation dimensions justified; why projected gravity, why the body frame, why a clock |
-| 10 | [Reward engineering](10-reward-engineering.md) | All sixteen terms with their equations, exponential kernels vs quadratic costs, and a worked reward-hacking exploit |
+| 10 | [Reward engineering](10-reward-engineering.md) | All seventeen terms with their equations, exponential kernels vs quadratic costs, and a worked reward-hacking exploit |
 | 11 | [Gaits, phase, and periodic control](11-gaits-and-phase.md) | Gait taxonomy, duty factor, phase offsets, and the maths that makes gait a commandable input |
 | 12 | [Curriculum and domain randomisation](12-curriculum-and-domain-randomization.md) | Why a fixed schedule fails, what a closed-loop curriculum measures, what to randomise and how much |
 
@@ -69,7 +70,7 @@ difference between debugging in an afternoon and debugging in a week.
 | # | Chapter | What it covers |
 |---|---------|----------------|
 | 13 | [Reading a training run](13-training-diagnostics.md) | Explained variance, approximate KL, clip fraction, entropy; what each failure mode looks like |
-| 14 | [The debugging log](14-debugging-log.md) | Sixteen real bugs in v1: the reasoning that found each one, the evidence, and the fix |
+| 14 | [The debugging log](14-debugging-log.md) | Twenty defects (16 in v1, 4 found in v2): the reasoning that found each one, the evidence, and the fix |
 | 15 | [Results](15-results.md) | v1 vs v2, measured on the same axes |
 | 16 | [What sim-to-real would take](16-sim-to-real.md) | The gaps that remain, honestly enumerated. Not implemented — explained |
 | 17 | [Scaling with MJX](17-mjx-and-scaling.md) | Why 16 CPU environments is the wrong shape for this problem, and what to do about it |
