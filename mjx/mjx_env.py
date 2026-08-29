@@ -87,7 +87,7 @@ class Go2MJXEnv:
         self,
         xml_path: str = DEFAULT_XML,
         decimation: int = 10,
-        action_scale: float = 0.30,
+        action_scale: float = 0.40,
         kp: float = 55.0,
         kd: float = 1.4,
         episode_length: int = 1000,
@@ -97,6 +97,9 @@ class Go2MJXEnv:
         command_ranges: CommandRanges | None = None,
         command_resample_steps: int = 250,   # 5 s at 50 Hz
         stand_probability: float = 0.10,
+        max_speed_per_hz: float = 0.40,
+        max_speed: float = 1.0,
+        feasibility_margin: float = 0.85,
         gait: str = "trot",
         reward_weights: dict | None = None,
         lin_vel_sigma: float = 0.20,
@@ -117,6 +120,13 @@ class Go2MJXEnv:
         self.reset_noise_scale = reset_noise_scale
         self.command_resample_steps = command_resample_steps
         self.stand_probability = stand_probability
+        # Speed feasibility, mirroring envs/commands.py. Without this the GPU
+        # path reintroduces bug B20: speed and gait frequency sampled
+        # independently produce commands no gait can satisfy, the exponential
+        # tracking kernel saturates, and the command becomes noise.
+        self.max_speed_per_hz = max_speed_per_hz
+        self.max_speed = max_speed
+        self.feasibility_margin = feasibility_margin
 
         # Nominal pose from the 'home' keyframe (bug B1 - see docs/14).
         key_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_KEY, "home")
@@ -186,6 +196,15 @@ class Go2MJXEnv:
                                     maxval=r.base_height[1])
         # Explicit stand-still mode, plus snapping of near-zero commands. Both
         # are jnp.where rather than `if`, because this runs inside jit.
+        # Feasibility clamp (bug B20), as jnp ops because this runs under jit:
+        #     v_max = min(max_speed_per_hz * f, max_speed) * margin
+        v_max = jnp.minimum(self.max_speed_per_hz * freq, self.max_speed)
+        v_max = v_max * self.feasibility_margin
+        vx = jnp.clip(vx, -v_max, v_max)
+        # Lateral strides are shorter than fore-aft ones; half is the same
+        # conservative allowance the CPU sampler uses.
+        vy = jnp.clip(vy, -0.5 * v_max, 0.5 * v_max)
+
         stand = jax.random.uniform(k6) < self.stand_probability
         cmd = jnp.array([vx, vy, yaw])
         small = jnp.linalg.norm(cmd) < 0.15

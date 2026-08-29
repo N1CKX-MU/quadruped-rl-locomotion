@@ -16,3 +16,7 @@ assets/*.gif
 !assets/training_curves.png
 !assets/go2_terrain.gif
 .DS_Store
+
+# WSL/GPU setup scratch
+.wsl_setup*.sh
+.dnsprobe.py
