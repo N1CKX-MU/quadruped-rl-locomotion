@@ -87,6 +87,51 @@ def test_gait_schedule_agrees_between_backends():
 
 
 @pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+def test_mjx_and_cpu_environments_agree_on_every_shared_default():
+    """The two backends must optimise the same problem, not just the same reward.
+
+    This caught real drift: after the B20 fix raised the CPU action scale to
+    0.40 and added the command feasibility clamp, the MJX environment was still
+    on 0.30 with no clamp at all - so the GPU path would have reintroduced B20
+    while every reward test still passed. Sharing envs/rewards.py guarantees the
+    same objective; it guarantees nothing about the dynamics or the command
+    distribution, which is what this test is for.
+    """
+    import inspect
+
+    from envs.go2_env import Go2Env
+    from mjx.mjx_env import Go2MJXEnv
+
+    cpu = inspect.signature(Go2Env).parameters
+    gpu = inspect.signature(Go2MJXEnv).parameters
+    shared = sorted(set(cpu) & set(gpu) - {"xml_path", "render_mode"})
+    assert len(shared) >= 10, shared        # guard against comparing nothing
+
+    mismatched = {
+        name: (cpu[name].default, gpu[name].default)
+        for name in shared
+        if cpu[name].default != gpu[name].default
+    }
+    assert not mismatched, "MJX and CPU defaults have drifted: %s" % mismatched
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+def test_mjx_command_sampling_respects_the_feasibility_limit():
+    """Bug B20 on the GPU side: no command may exceed stride x frequency."""
+    from mjx.mjx_env import Go2MJXEnv
+
+    env = Go2MJXEnv()
+    sample = jax.jit(jax.vmap(env.sample_command))
+    cmd, freq, _ = sample(jax.random.split(jax.random.PRNGKey(0), 512))
+    cmd, freq = np.asarray(cmd), np.asarray(freq)
+
+    v_max = np.minimum(env.max_speed_per_hz * freq, env.max_speed)
+    v_max = v_max * env.feasibility_margin
+    assert np.all(np.abs(cmd[:, 0]) <= v_max + 1e-5)
+    assert np.all(np.abs(cmd[:, 1]) <= 0.5 * v_max + 1e-5)
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
 def test_mjx_env_resets_steps_and_vmaps():
     """End-to-end: the environment traces, jits and vmaps, and the physics is sane.
 
