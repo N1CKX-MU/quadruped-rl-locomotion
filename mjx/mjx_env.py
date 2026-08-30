@@ -31,9 +31,30 @@ What is necessarily different
   bounded contact budget. The physics is therefore NOT identical to the CPU
   model - evaluate on the CPU environment, not this one.
 
-Status: verified to run, vmap and jit correctly on CPU JAX. It has not been
-benchmarked on a GPU by the author; the throughput claims in chapter 17 for MJX
-are from the literature, not from this machine.
+What this backend does NOT yet implement
+----------------------------------------
+Stated explicitly, because a silent gap here is worse than a missing feature:
+a policy trained on this backend is trained on an EASIER problem than the CPU
+environment poses, and would be correspondingly less robust.
+
+* **No domain randomisation.** The CPU env randomises friction, trunk mass and
+  the PD gains every episode (docs/12).
+* **No external pushes.** The CPU env shoves the trunk every 3-7 s.
+* **No observation noise.**
+* **No episode time limit.** Brax's EpisodeWrapper supplies one when this env
+  is used through mjx/train_mjx.py, but the env itself does not truncate.
+
+All four are straightforward to add - they are per-episode `jnp.where` on the
+PRNG key rather than the Python branching the CPU env uses. They are absent
+because the first goal was a correct, fast backend, and correctness is easier to
+establish without them. Add them before trusting a GPU-trained policy anywhere
+the CPU-trained one has been.
+
+The defaults that DO exist are asserted equal to the CPU environment's by
+tests/test_mjx.py, which caught real drift once already (action_scale and the
+B20 feasibility clamp).
+
+Status: verified to run, vmap and jit correctly on CPU JAX.
 """
 
 from __future__ import annotations
@@ -49,7 +70,7 @@ from mujoco import mjx
 from envs import gait as gait_mod
 from envs import rewards as reward_mod
 from envs.commands import CommandRanges
-from envs.go2_env import resolve_asset_path
+from envs.paths import resolve_asset_path
 
 DEFAULT_XML = "mujoco_menagerie/unitree_go2/scene_mjx.xml"
 FOOT_GEOM_NAMES = ("FL", "FR", "RL", "RR")

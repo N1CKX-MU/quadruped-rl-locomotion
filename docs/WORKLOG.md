@@ -166,8 +166,20 @@ Ordered by what I would do next.
 ## Known traps on this machine
 
 - **WSL has no DNS** unless `/etc/resolv.conf` is written by hand;
-  `generateResolvConf = false` is set in `/etc/wsl.conf`.
-- **`sudo` in WSL requires a password.**
+  `generateResolvConf = false` is set in `/etc/wsl.conf` and WSL therefore never
+  creates the file. Restore WSL's own backup:
+  `wsl -d Ubuntu -u root cp /etc/resolv.conf.wslbak /etc/resolv.conf`.
+  All four candidate resolvers (`10.255.255.254`, the gateway, `1.1.1.1`,
+  `8.8.8.8`) answer once the file exists - the missing file is the whole fault,
+  so `generateResolvConf = false` can stay as set.
+- **`sudo` in WSL requires a password, but `wsl -u root` does not.** Any admin
+  step is a passwordless one-liner from PowerShell.
+- **`python3-venv` is not installed** and `apt` needs root, so
+  `python3 -m venv` fails on `ensurepip`. Sidestep it without root:
+  `python3 -m venv --without-pip`, then bootstrap pip inside the venv with
+  PyPA's `get-pip.py`.
+- **Put WSL venvs on ext4 (`~`), not `/mnt/d`.** The 9p filesystem makes
+  imports and package installs painfully slow.
 - **PowerShell 5.1 does not accept `&&`** as a statement separator. Use `;`.
 - **`make` needs the venv path on Windows:** `make PY=venv/Scripts/python.exe …`
 - **`brax` 0.14.2 calls `jax.device_put_replicated`**, removed in JAX 0.11.
