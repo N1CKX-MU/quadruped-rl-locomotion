@@ -5,11 +5,24 @@
 # For a CUDA GPU, replace the jax line with:
 #   pip install "jax[cuda12]==0.7.2" "jaxlib==0.7.2"
 #
-# Version note, from actually running this: brax 0.14.2 calls
-# jax.device_put_replicated, which was REMOVED in jax 0.11. With jax>=0.11 the
-# trainer fails at start-up with an AttributeError. jax 0.7.2 is the version
-# this was verified against. flax will warn that it wants jax>=0.11.1; the
-# warning is harmless for the brax PPO path.
+# Version notes, both learned the hard way on this machine.
+#
+# 1. brax 0.14.2 calls jax.device_put_replicated, REMOVED in jax 0.11. With
+#    jax>=0.11 the trainer dies at start-up with an AttributeError. jax 0.7.2
+#    is the version this was verified against. flax will warn that it wants
+#    jax>=0.11.1; that warning is harmless for the brax PPO path.
+#
+# 2. INSTALL EVERYTHING IN ONE pip COMMAND. Installing jax first and then
+#    mujoco-mjx/brax in a second command lets the second resolver pass upgrade
+#    jax to latest and orphan the CUDA plugin, giving you:
+#
+#      RuntimeWarning: JAX plugin jax_cuda12_plugin version 0.7.2 is installed,
+#      but it is not compatible with the installed jaxlib version 0.11.1
+#      AttributeError: module 'jaxlib.xla_client' has no attribute
+#      'register_custom_type_id_handler'
+#
+#    jax.devices() may still report a CudaDevice in that state, so the failure
+#    looks like a working GPU until the first real computation.
 jax==0.7.2
 jaxlib==0.7.2
 mujoco-mjx>=3.2.0

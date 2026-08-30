@@ -76,6 +76,39 @@ def test_reward_is_jittable_and_vmappable():
     assert batched(jnp.arange(4)).shape == (4,)
 
 
+def test_gpu_path_does_not_import_the_cpu_stack():
+    """The MJX backend must not drag gymnasium or mujoco.viewer in with it.
+
+    envs/__init__.py used to import Go2Env eagerly, so `from envs import gait`
+    executed it and pulled gymnasium along. That made the GPU training path die
+    with ModuleNotFoundError in a WSL venv holding JAX and MJX and having no
+    reason to want a Gymnasium wrapper or an OpenGL viewer. envs/__init__.py is
+    lazy now (PEP 562) and resolve_asset_path lives in the dependency-free
+    envs/paths.py rather than in go2_env.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import sys
+        sys.path.insert(0, %r)
+        import envs, envs.gait, envs.rewards, envs.commands, envs.paths
+        import mjx.mjx_env
+        leaked = [m for m in ("gymnasium", "mujoco.viewer", "stable_baselines3")
+                  if m in sys.modules]
+        print("LEAKED:" + ",".join(leaked))
+        """
+    ) % os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    out = subprocess.run([sys.executable, "-c", script],
+                         capture_output=True, text=True, timeout=300)
+    assert "LEAKED:" in out.stdout, out.stderr[-1500:]
+    leaked = out.stdout.split("LEAKED:")[1].strip()
+    assert leaked == "", "GPU path pulled in the CPU stack: %s" % leaked
+
+
 def test_gait_schedule_agrees_between_backends():
     from envs.gait import desired_contact, gait_params
 

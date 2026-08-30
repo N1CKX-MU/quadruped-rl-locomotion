@@ -49,36 +49,8 @@ import mujoco.viewer  # B16: v1 used mujoco.viewer without importing it
 from envs import gait as gait_mod
 from envs import rewards as reward_mod
 from envs.commands import Command, CommandRanges, CommandSampler
-
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def resolve_asset_path(path):
-    """Resolve a model path relative to the repository, not the shell's cwd.
-
-    The default XML path is relative, which silently made every script in this
-    repository only runnable from the repository root - a script invoked by
-    absolute path from anywhere else died in MjModel.from_xml_path with
-    "Error opening file", which names neither the file nor the reason.
-
-    An absolute path, or a relative one that exists from the current directory,
-    is used unchanged; otherwise it is tried relative to the repo root.
-    """
-    if os.path.isabs(path) or os.path.exists(path):
-        return path
-    candidate = os.path.join(_REPO_ROOT, path)
-    if os.path.exists(candidate):
-        return candidate
-    raise FileNotFoundError(
-        "Could not find the MuJoCo model %r.\n"
-        "Looked in the current directory (%s)\n"
-        "and in the repository root (%s).\n"
-        "If mujoco_menagerie is missing, fetch it with:\n"
-        "    git clone --depth 1 "
-        "https://github.com/google-deepmind/mujoco_menagerie.git"
-        % (path, os.getcwd(), _REPO_ROOT)
-    )
+from envs.paths import REPO_ROOT as _REPO_ROOT  # noqa: F401
+from envs.paths import resolve_asset_path
 
 
 class Go2Env(gym.Env):
