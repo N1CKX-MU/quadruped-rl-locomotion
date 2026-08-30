@@ -212,9 +212,23 @@ fourteen times per control step.
 | 10 | dummy | 290 |
 | 16 | subproc | **616** |
 
-So 10M steps is about 4.5 hours on this machine. For the two-orders-of-magnitude
-speedup and why it is architectural rather than algorithmic, see
-[`docs/17-mjx-and-scaling.md`](docs/17-mjx-and-scaling.md).
+So 10M steps is about 4.5 hours on this machine.
+
+**GPU (MJX), measured on an RTX 3050 Laptop** — `python -m mjx.benchmark`:
+
+| environments | env-steps/s | GPU memory |
+|---|---|---|
+| 512 | 5,976 | 104 MB |
+| **2048** | **6,579** | **441 MB** |
+| 4096 | 6,161 | 640 MB |
+| 8192 | out of memory | — |
+
+Peak 6,579 env-steps/s — **10.7x the CPU path**, taking a 20M-step run from
+about 9 hours to 51 minutes. Note that memory is *not* the constraint (2048
+environments fit in 441 MB of 3221) and that throughput is *not* monotonic —
+4096 is slower than 2048. Setup and the full analysis are in
+[`docs/17-mjx-and-scaling.md`](docs/17-mjx-and-scaling.md); install with
+`requirements-mjx.txt`, which documents two version traps worth reading first.
 
 <a name="results"></a>
 **Policy performance.** 18.76M steps, 16 environments, ~8 hours. Measured over

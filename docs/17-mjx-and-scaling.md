@@ -99,13 +99,62 @@ The consequences:
 
 | | CPU MuJoCo | MJX |
 |---|---|---|
-| environments | 16 | 4096+ |
-| steps/s | ~600 | $10^5$–$10^6$ |
-| where the policy lives | CPU, batch 16 | GPU, batch 4096 |
+| environments | 16 | hundreds to thousands |
+| where the policy lives | CPU, batch 16 | GPU, batch 2048 |
 | observation transfer | pickled through pipes | stays on the GPU |
-| 50M steps | 22 hours | minutes |
 
 Nothing crosses a process boundary, because nothing is in another process.
+
+### Measured, on the machine this was developed on
+
+The figures above are architectural. Here is what actually happened on an
+**RTX 3050 Laptop** (4 GB, 3221 MB usable), JAX 0.7.2, MJX 3.12, WSL2:
+
+| environments | env-steps/s | GPU memory |
+|---|---|---|
+| 64 | 3,308 | 12 MB |
+| 128 | 4,580 | 26 MB |
+| 256 | 5,669 | 53 MB |
+| 512 | 5,976 | 104 MB |
+| 1024 | 6,057 | 214 MB |
+| **2048** | **6,579** | **441 MB** |
+| 4096 | 6,161 | 640 MB |
+| 8192 | out of memory | — |
+
+**Peak 6,579 env-steps/s at 2048 environments — 10.7x the CPU path's 616.**
+A 20M-step run drops from about 9 hours to 51 minutes.
+
+Three things in that table are worth more than the headline.
+
+**Memory was not the constraint, and the prediction that it would be was
+wrong.** Going in, the reasoning was "4 GB is small, so VRAM will cap the
+environment count". It does not: 2048 environments fit in 441 MB of 3221, and
+throughput had already peaked. The limit is *compute* — the SMs saturate long
+before the memory does. Memory only becomes binding at 8192, four times past
+the useful maximum.
+
+**Throughput is not monotonic.** 4096 environments are *slower* than 2048. Past
+saturation, larger batches add scheduling and memory-traffic overhead without
+adding parallelism the hardware can use. Doubling until something fails would
+have reported 4096 as the answer; the right answer is the peak.
+
+**10.7x, not 100x.** The literature's dramatic speedups come from datacentre
+cards with five times the SMs, compared against weaker CPU baselines. This is a
+2048-CUDA-core laptop GPU, and the CPU baseline here is a reasonably tuned
+16-environment `SubprocVecEnv`. A tenfold speedup is genuinely useful — it is
+the difference between one experiment a day and nine — but it is not the
+transformation the papers suggest, and quoting theirs would have been exactly
+the mistake B20 was about.
+
+Reproduce with `python -m mjx.benchmark`, which searches for the peak and times
+only the steady state with `block_until_ready`.
+
+### Compile time is the hidden cost
+
+Every environment count in that table cost **45–100 seconds of XLA compilation**
+before a single useful step ran. That is invisible in a long training run and
+brutal in an interactive one: a five-second experiment takes two minutes. It is
+also why the benchmark reports compile and steady-state timings separately.
 
 ### What it costs
 
@@ -134,7 +183,11 @@ The CPU environment stays canonical. It is the one that renders, that
 video. It is also the one whose physics is unsimplified.
 
 MJX is an **optional training accelerator**, and it is deliberately last in the
-build order. The reasoning is the same as chapter 13's: optimising the training
+build order. It is now installed and measured (17.4); what it is not yet is
+*trained with*, and the environment it offers is deliberately easier than the
+CPU one - no domain randomisation, no pushes, no observation noise. Those are
+listed at the top of `mjx/mjx_env.py` and must be added before a GPU-trained
+policy is trusted anywhere the CPU-trained one has been. The reasoning is the same as chapter 13's: optimising the training
 loop before the reward function is correct spends GPU hours discovering that
 your reward is wrong faster. The two bugs that cost the most in this project
 (B1 and B17) would have been reproduced at 4096× the speed and been no easier to
@@ -182,7 +235,8 @@ staged rather than assumed.
 
 Not everything requires JAX.
 
-**A CUDA build of PyTorch.** The environment ships `torch 2.13.0+cpu` by
+**A CUDA build of PyTorch.** (Relevant only to the CPU/SB3 path; MJX does not
+use PyTorch at all.) The environment ships `torch 2.13.0+cpu` by
 default, because that is what `pip install -r requirements.txt` resolves to.
 With 16 environments the policy update is a small fraction of the time, so this
 buys little now — but it costs nothing and matters as the network grows:
