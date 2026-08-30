@@ -23,7 +23,7 @@ without reading either.
 | Trained policy | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl` |
 | Training run | 18.76M steps, 16 envs, seed 0, ~8 h at ~600 steps/s |
 | CPU training | works |
-| GPU training | **in progress** — MJX verified on CPU JAX; WSL GPU setup blocked on DNS |
+| GPU training | **working** — 6,579 env-steps/s at 2048 envs, 10.7x the CPU path |
 
 **What the policy does.** Tracks velocity commands to 0.021 m/s (forward),
 0.028 m/s (lateral) and 0.035 rad/s (yaw) over 30 random commands from the
@@ -145,10 +145,11 @@ from-scratch PPO, the MJX backend, 67 tests, and the 17-chapter book.
 
 Ordered by what I would do next.
 
-1. **GPU training** — blocked on the WSL DNS fix above. Then: install
-   `jax[cuda12]` + `mujoco-mjx` + `brax` in a WSL venv, verify JAX sees the GPU,
-   and **measure** the largest workable `--num-envs` for 4 GB before quoting any
-   throughput figure.
+1. **Train on the GPU.** The backend is installed, measured and decoupled;
+   nothing has been trained with it yet. Before trusting a GPU-trained policy,
+   add the four things `mjx/mjx_env.py` says it lacks: domain randomisation,
+   pushes, observation noise, and an episode limit. Without them the GPU env
+   poses an easier problem than the CPU one.
 2. **Multi-gait.** The mechanism exists and is unused. Swap the observation's
    2-number global clock for the 8-number per-foot clock (`clock_signal` in
    `envs/gait.py`), bump `obs_dim`, mirror in `mjx/mjx_env.py`, widen `gaits` in

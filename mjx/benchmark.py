@@ -4,10 +4,16 @@
     python -m mjx.benchmark --envs 1024      # benchmark one size
     python -m mjx.benchmark --max-search 8192
 
-The MJX literature quotes 4096 parallel environments. That figure comes from
-datacentre cards. On a 4 GB laptop GPU it is fiction, and quoting it would be
-the same mistake as bug B20 - asserting a number the hardware cannot deliver
-instead of measuring one.
+The MJX literature quotes 4096 parallel environments on datacentre cards.
+Quoting that for whatever hardware you happen to have would be the same mistake
+as bug B20 - asserting a number instead of measuring one.
+
+Measured on an RTX 3050 Laptop (4 GB, 3221 MB usable), and worth reading before
+you assume anything about your own card: **memory was not the constraint.**
+1024 environments used 214 MB of 3221. The limit is compute - throughput
+plateaus once the SMs saturate, long before the memory runs out. The prediction
+that 4 GB would be the binding constraint was simply wrong, which is the reason
+this script exists rather than a rule of thumb.
 
 So this script does two things:
 
@@ -128,17 +134,28 @@ def main():
 
     print("  searching for the largest workable environment count:")
     best = None
+    stalled = 0
     n = args.start
     while n <= args.max_search:
         result = benchmark(env, n, steps=args.steps)
         if result is None:
             break
         throughput, _ = result
+        # Stop only after TWO consecutive sizes fail to improve. A single 5%
+        # step is well inside run-to-run noise, and stopping on it once already
+        # reported 512 as "the ceiling" on hardware that was nowhere near any
+        # limit - 1024 envs used 214 MB of 3221, so the constraint was compute,
+        # not memory, and the search had no business stopping there.
         if best is not None and throughput < best[1] * 1.05:
-            print("    (throughput stopped improving; %d is the useful ceiling)"
-                  % best[0])
-            break
-        best = (n, throughput)
+            stalled += 1
+            if stalled >= 2:
+                print("    (no improvement for two sizes; %d is the ceiling)"
+                      % best[0])
+                break
+        else:
+            stalled = 0
+        if best is None or throughput > best[1]:
+            best = (n, throughput)
         n *= 2
 
     print()
