@@ -204,6 +204,9 @@ class Go2Env(gym.Env):
                 )
             self.foot_geom_ids.append(gid)
         self.foot_geom_ids = np.array(self.foot_geom_ids, dtype=np.int32)
+        # Sphere radius of the foot geoms, used to spawn the robot ON the floor
+        # rather than through it (B21).
+        self.foot_radius = float(self.model.geom_size[self.foot_geom_ids[0]][0])
 
         # B10: everything on the robot that is NOT a foot. Ground contact with
         # any of these is a collision (knee, shin, hip, trunk).
@@ -652,6 +655,23 @@ class Go2Env(gym.Env):
 
         self._randomize_domain()
         mujoco.mj_forward(self.model, self.data)
+
+        # B21: place the robot ON the ground, not through it.
+        #
+        # The keyframe height is exactly the standing height, so any downward
+        # perturbation - the height noise, or a joint angle that extends a leg -
+        # buries a foot. Measured before this fix: 144 of 200 resets spawned a
+        # foot below z=0, the deepest by 6.6 cm. MuJoCo's CPU solver absorbs
+        # that without complaint, so it never showed up as an error; it simply
+        # started 72% of episodes with a large spurious contact impulse. The
+        # same reset logic under MJX, whose solver runs far fewer iterations,
+        # diverged to NaN outright.
+        foot_z = self.data.geom_xpos[self.foot_geom_ids][:, 2] - self.foot_radius
+        lift = max(0.0, 0.002 - float(foot_z.min()))
+        if lift > 0.0:
+            self.data.qpos[2] += lift
+            mujoco.mj_forward(self.model, self.data)
+
         self._refresh_frame_cache()
 
         self.command = self.command_sampler.sample(self.np_random)
