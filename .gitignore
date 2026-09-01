@@ -20,3 +20,4 @@ assets/*.gif
 # WSL/GPU setup scratch
 .wsl_setup*.sh
 .dnsprobe.py
+.train_gpu.sh

@@ -131,6 +131,25 @@ def test_missing_model_says_where_it_looked():
     assert "mujoco_menagerie.git" in message   # tells you how to fix it
 
 
+def test_reset_never_spawns_a_foot_through_the_floor(env):
+    """B21. The keyframe height IS the standing height, so any downward
+    perturbation at reset - the height noise, or a joint angle that extends a
+    leg - buries a foot in the ground.
+
+    Measured before the fix: 144 of 200 resets penetrated, the deepest by
+    6.6 cm. MuJoCo's CPU solver absorbs that silently, so it never raised an
+    error; it just began 72% of episodes with a large spurious contact impulse.
+    The identical reset under MJX, whose solver runs far fewer iterations,
+    diverged to NaN outright.
+    """
+    worst = 0.0
+    for seed in range(100):
+        env.reset(seed=seed)
+        foot_z = env.data.geom_xpos[env.foot_geom_ids][:, 2] - env.foot_radius
+        worst = min(worst, float(foot_z.min()))
+    assert worst > -1e-6, "deepest foot penetration at reset: %.5f m" % worst
+
+
 def test_observation_matches_the_declared_space(env):
     obs, _ = env.reset(seed=1)
     assert obs.shape == env.observation_space.shape

@@ -165,6 +165,41 @@ def test_mjx_command_sampling_respects_the_feasibility_limit():
 
 
 @pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+@pytest.mark.skipif(
+    jax.devices()[0].platform == "cpu",
+    reason="128 MJX environments on CPU JAX takes minutes; this needs a GPU",
+)
+def test_mjx_physics_stays_finite_over_many_environments():
+    """B21, the MJX half. Batch size is itself a test parameter here.
+
+    The spawn-penetration bug hit roughly 1 environment in 128 and diverged to
+    NaN within a few steps. Every smoke test up to that point used 4-16
+    environments and passed by luck. 128 is the smallest batch that reliably
+    exposed it, so that is what this test uses.
+    """
+    pytest.importorskip("mujoco.mjx")
+    from mjx.mjx_env import Go2MJXEnv
+
+    env = Go2MJXEnv()
+    n = 128
+    reset = jax.jit(jax.vmap(env.reset))
+    step = jax.jit(jax.vmap(env.step))
+    state = reset(jax.random.split(jax.random.PRNGKey(7), n))
+
+    qpos = np.asarray(state["data"].qpos)
+    foot_z = np.asarray(state["data"].geom_xpos)[:, np.asarray(env.foot_geom_ids), 2]
+    assert np.all(np.isfinite(qpos))
+    assert foot_z.min() - env.foot_radius > -1e-3, (
+        "spawned through the floor by %.4f m" % (env.foot_radius - foot_z.min()))
+
+    action = jnp.zeros((n, env.action_size))
+    for _ in range(50):
+        state, _ = step(state, action)
+    assert np.all(np.isfinite(np.asarray(state["data"].qpos)))
+    assert np.all(np.isfinite(np.asarray(state["reward"])))
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
 def test_mjx_env_resets_steps_and_vmaps():
     """End-to-end: the environment traces, jits and vmaps, and the physics is sane.
 

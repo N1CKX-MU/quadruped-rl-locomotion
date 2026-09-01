@@ -31,30 +31,34 @@ What is necessarily different
   bounded contact budget. The physics is therefore NOT identical to the CPU
   model - evaluate on the CPU environment, not this one.
 
-What this backend does NOT yet implement
-----------------------------------------
-Stated explicitly, because a silent gap here is worse than a missing feature:
-a policy trained on this backend is trained on an EASIER problem than the CPU
-environment poses, and would be correspondingly less robust.
+Robustness, and where each piece lives
+--------------------------------------
+The CPU environment's robustness features are all present, but split across two
+files by necessity:
 
-* **No domain randomisation.** The CPU env randomises friction, trunk mass and
-  the PD gains every episode (docs/12).
-* **No external pushes.** The CPU env shoves the trunk every 3-7 s.
-* **No observation noise.**
-* **No episode time limit.** Brax's EpisodeWrapper supplies one when this env
-  is used through mjx/train_mjx.py, but the env itself does not truncate.
+* **State-level**, in this file: actuator-gain randomisation, external pushes
+  and observation noise. These vary per environment simply by living in the
+  state dict, which ``vmap`` already maps over.
+* **Model-level**, in ``mjx/domain_randomization.py``: ground friction and link
+  masses. These live in ``mjx.Model``, which is *shared* across the batch, so
+  per-environment variation needs a batched model plus matching ``in_axes``.
+  ``mjx/train_mjx.py`` passes it to brax as ``randomization_fn``.
 
-All four are straightforward to add - they are per-episode `jnp.where` on the
-PRNG key rather than the Python branching the CPU env uses. They are absent
-because the first goal was a correct, fast backend, and correctness is easier to
-establish without them. Add them before trusting a GPU-trained policy anywhere
-the CPU-trained one has been.
+The push logic is branchless. A Python ``if remaining > 0`` would be a
+ConcretizationTypeError under jit and - worse - silently wrong under vmap if it
+ever did trace, because one environment's timing would decide the whole batch's.
 
-The defaults that DO exist are asserted equal to the CPU environment's by
-tests/test_mjx.py, which caught real drift once already (action_scale and the
-B20 feasibility clamp).
+Episode truncation is reported as a separate ``truncated`` flag rather than
+folded into ``done``, so a caller can bootstrap across it instead of treating it
+as terminal (chapter 4, 4.7). brax's EpisodeWrapper applies its own limit on
+top; this one makes the environment correct when driven directly.
 
-Status: verified to run, vmap and jit correctly on CPU JAX.
+The defaults are asserted equal to the CPU environment's by tests/test_mjx.py,
+which caught real drift once already (action_scale and the B20 feasibility
+clamp).
+
+Status: verified on GPU (RTX 3050, WSL2). Peak 6,579 env-steps/s at 2048
+environments - see docs/17.
 """
 
 from __future__ import annotations
@@ -125,9 +129,21 @@ class Go2MJXEnv:
         reward_weights: dict | None = None,
         lin_vel_sigma: float = 0.20,
         ang_vel_sigma: float = 0.25,
+        # Robustness, mirroring envs/go2_env.py
+        randomize_dynamics: bool = False,
+        kp_range: tuple = (0.8, 1.2),
+        kd_range: tuple = (0.8, 1.2),
+        push_enabled: bool = True,
+        push_interval_s: tuple = (3.0, 7.0),
+        push_duration_s: float = 0.15,
+        push_force: tuple = (-40.0, 40.0),
+        obs_noise_scale: float = 0.0,
     ):
         self.mj_model = mujoco.MjModel.from_xml_path(resolve_asset_path(xml_path))
-        self.model = mjx.put_model(self.mj_model)
+        # Named `sys` because brax's DomainRandomizationVmapWrapper swaps it
+        # per batch element (env.unwrapped.sys = ...). `model` stays as a
+        # readable alias.
+        self.sys = mjx.put_model(self.mj_model)
 
         self.decimation = decimation
         self.physics_dt = float(self.mj_model.opt.timestep)
@@ -175,12 +191,21 @@ class Go2MJXEnv:
         # Precomputed on the host. Anything derived from model metadata must be
         # a concrete array before tracing begins - calling int() on a value
         # inside a jitted function is a ConcretizationTypeError.
+        # Sphere radius of the foot geoms, used to place the robot ON the floor
+        # at reset rather than through it.
+        self.foot_radius = float(self.mj_model.geom_size[
+            mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM,
+                              FOOT_GEOM_NAMES[0])][0])
+
         self.foot_body_ids = jnp.array([
             int(self.mj_model.geom_bodyid[
                 mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, n)])
             for n in FOOT_GEOM_NAMES
         ])
         base_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "base")
+        # Needed by the push force and by domain randomisation, so it is an
+        # attribute rather than a local.
+        self.base_body_id = base_id
         foot_set = set(int(g) for g in self.foot_geom_ids)
         self.trunk_geom_ids = jnp.array([
             g for g in range(self.mj_model.ngeom)
@@ -197,8 +222,24 @@ class Go2MJXEnv:
         self.lin_vel_sigma = lin_vel_sigma
         self.ang_vel_sigma = ang_vel_sigma
 
+        self.randomize_dynamics = randomize_dynamics
+        self.kp_range = kp_range
+        self.kd_range = kd_range
+        self.push_enabled = push_enabled
+        self.push_interval_s = push_interval_s
+        self.push_duration_s = push_duration_s
+        self.push_force = push_force
+        self.obs_noise_scale = obs_noise_scale
+        self.max_episode_steps = episode_length
+
         self.obs_size = 3 + 3 + 3 + self.n_joints * 3 + 3 + 2
         self.action_size = self.n_joints
+
+    @property
+    def model(self):
+        """Alias for ``sys``. Brax requires the name ``sys``; the rest of this
+        repository talks about models."""
+        return self.sys
 
     # ------------------------------------------------------------------ #
     #  Commands                                                           #
@@ -277,13 +318,13 @@ class Go2MJXEnv:
     #  Observation                                                        #
     # ------------------------------------------------------------------ #
 
-    def _obs(self, data, prev_action, cmd, phase):
+    def _obs(self, data, prev_action, cmd, phase, rng=None):
         quat = data.qpos[3:7]
         proj_g = quat_rotate_inverse(quat, jnp.array([0.0, 0.0, -1.0]))
         ang_b = quat_rotate_inverse(quat, data.qvel[3:6])
         lin_b = quat_rotate_inverse(quat, data.qvel[0:3])
         phase_rad = 2.0 * jnp.pi * phase
-        return jnp.concatenate([
+        obs = jnp.concatenate([
             proj_g,
             ang_b * OBS_SCALE_ANG_VEL,
             lin_b * OBS_SCALE_LIN_VEL,
@@ -293,14 +334,17 @@ class Go2MJXEnv:
             cmd * OBS_SCALE_CMD,
             jnp.array([jnp.sin(phase_rad), jnp.cos(phase_rad)]),
         ])
+        if self.obs_noise_scale > 0.0 and rng is not None:
+            obs = obs + jax.random.normal(rng, obs.shape) * self.obs_noise_scale
+        return obs
 
     # ------------------------------------------------------------------ #
     #  reset / step                                                       #
     # ------------------------------------------------------------------ #
 
     def reset(self, rng):
-        rng, k_joint, k_h, k_yaw, k_rp, k_v, k_w, k_jv, k_ph, k_cmd = \
-            jax.random.split(rng, 10)
+        (rng, k_joint, k_h, k_yaw, k_rp, k_v, k_w, k_jv, k_ph, k_cmd,
+         k_kp, k_kd, k_push, k_obs) = jax.random.split(rng, 14)
 
         qpos = self.init_qpos
         n = self.reset_noise_scale
@@ -317,12 +361,45 @@ class Go2MJXEnv:
         qvel = qvel.at[6:].set(
             jax.random.uniform(k_jv, (self.n_joints,), minval=-0.5, maxval=0.5))
 
-        data = mjx.make_data(self.model).replace(qpos=qpos, qvel=qvel)
-        data = mjx.forward(self.model, data)
+        data = mjx.make_data(self.sys).replace(qpos=qpos, qvel=qvel)
+        data = mjx.forward(self.sys, data)
+
+        # Place the robot ON the ground, not through it.
+        #
+        # The keyframe height is exactly the standing height, so ANY downward
+        # perturbation - the height noise, or a joint angle that extends a leg -
+        # buries a foot in the floor. Measured before this fix: 59 of 128 reset
+        # states had a foot below z=0, with penetrations up to 3.9 cm, and MJX's
+        # reduced-iteration solver diverged to NaN on roughly 1 in 128 of them
+        # within a few steps. Even where it did not diverge, the episode began
+        # with a large spurious contact impulse.
+        #
+        # So: measure the lowest foot after posing, and lift the base by however
+        # much it takes to clear the ground.
+        foot_z = data.geom_xpos[self.foot_geom_ids, 2] - self.foot_radius
+        lift = jnp.maximum(0.0, 0.002 - jnp.min(foot_z))
+        qpos = qpos.at[2].add(lift)
+        data = mjx.forward(self.sys, data.replace(qpos=qpos))
 
         phase = jax.random.uniform(k_ph)
         cmd, freq, height = self.sample_command(k_cmd)
         prev_action = jnp.zeros(self.n_joints)
+
+        # Actuator-gain randomisation. These live in STATE rather than in the
+        # model, so they vary per environment under vmap without needing a
+        # batched mjx.Model. Friction and link masses are model fields and are
+        # randomised instead through brax's randomization_fn - see
+        # mjx/domain_randomization.py.
+        rand = 1.0 if self.randomize_dynamics else 0.0
+        kp_scale = 1.0 + rand * (jax.random.uniform(
+            k_kp, minval=self.kp_range[0], maxval=self.kp_range[1]) - 1.0)
+        kd_scale = 1.0 + rand * (jax.random.uniform(
+            k_kd, minval=self.kd_range[0], maxval=self.kd_range[1]) - 1.0)
+
+        # Push schedule. Randomised timing, so the policy cannot memorise it
+        # the way it could v1's every-200-steps rule (bug B11).
+        push_countdown = jax.random.uniform(
+            k_push, minval=self.push_interval_s[0], maxval=self.push_interval_s[1])
 
         return dict(
             data=data,
@@ -336,25 +413,78 @@ class Go2MJXEnv:
             feet_air_time=jnp.zeros(4),
             last_contact=jnp.zeros(4),
             step=jnp.array(0, dtype=jnp.int32),
-            obs=self._obs(data, prev_action, cmd, phase),
+            kp_scale=kp_scale,
+            kd_scale=kd_scale,
+            push_countdown=push_countdown,
+            push_remaining=jnp.array(0.0),
+            obs=self._obs(data, prev_action, cmd, phase, k_obs),
             reward=jnp.array(0.0),
             done=jnp.array(0.0),
+            truncated=jnp.array(0.0),
         )
+
+    def _update_push(self, data, rng, countdown, remaining):
+        """External shove, as a real force for a real duration (bug B11).
+
+        Branchless: every environment in the batch evaluates the same graph and
+        the decisions are `jnp.where`. A Python `if` on `remaining > 0` would be
+        a ConcretizationTypeError under jit, and worse, would be *silently*
+        wrong under vmap if it ever did trace - one environment's timing would
+        decide the whole batch's.
+        """
+        if not self.push_enabled:
+            return data, countdown, remaining
+
+        k_force, k_next = jax.random.split(rng)
+        pushing = remaining > 0.0
+        due = jnp.logical_and(jnp.logical_not(pushing), countdown <= 0.0)
+
+        force = jax.random.uniform(
+            k_force, (3,), minval=self.push_force[0], maxval=self.push_force[1])
+        # Mostly horizontal: a vertical yank is not a physical shove.
+        force = force.at[2].multiply(0.25)
+
+        applied = jnp.where(due, force, jnp.where(pushing,
+                                                  data.xfrc_applied[self.base_body_id, :3],
+                                                  jnp.zeros(3)))
+        xfrc = data.xfrc_applied.at[self.base_body_id, :3].set(applied)
+
+        new_remaining = jnp.where(
+            due, self.push_duration_s, jnp.maximum(remaining - self.dt, 0.0))
+        # Reschedule when a push ends; otherwise keep counting down.
+        ended = jnp.logical_and(pushing, new_remaining <= 0.0)
+        fresh = jax.random.uniform(
+            k_next, minval=self.push_interval_s[0], maxval=self.push_interval_s[1])
+        new_countdown = jnp.where(
+            jnp.logical_or(due, ended), fresh,
+            jnp.where(pushing, countdown, countdown - self.dt))
+
+        return data.replace(xfrc_applied=xfrc), new_countdown, new_remaining
 
     def step(self, state, action):
         action = jnp.clip(action, -1.0, 1.0)
         target = self.default_joint_pos + action * self.action_scale
 
+        rng, k_push, k_obs, k_cmd = jax.random.split(state["rng"], 4)
+
+        data, push_countdown, push_remaining = self._update_push(
+            state["data"], k_push, state["push_countdown"],
+            state["push_remaining"])
+
+        # Per-environment actuator gains (domain randomisation).
+        kp = self.kp * state["kp_scale"]
+        kd = self.kd * state["kd_scale"]
+
         def pd_step(data, _):
-            torque = self.kp * (target - data.qpos[7:]) - self.kd * data.qvel[6:]
+            torque = kp * (target - data.qpos[7:]) - kd * data.qvel[6:]
             torque = jnp.clip(torque, -self.torque_limits, self.torque_limits)
-            data = mjx.step(self.model, data.replace(ctrl=torque))
+            data = mjx.step(self.sys, data.replace(ctrl=torque))
             return data, torque
 
         # scan rather than a Python loop: one compiled kernel, not `decimation`
         # copies of the physics graph.
         data, torques = jax.lax.scan(
-            pd_step, state["data"], None, length=self.decimation)
+            pd_step, data, None, length=self.decimation)
         last_torque = torques[-1]
 
         phase = jnp.mod(state["phase"] + state["gait_freq"] * self.dt, 1.0)
@@ -407,13 +537,22 @@ class Go2MJXEnv:
         ).astype(jnp.float32)
 
         step = state["step"] + 1
-        # Mid-episode command resampling, as a masked update.
-        rng, k = jax.random.split(state["rng"])
+        # Mid-episode command resampling, as a masked update. k_cmd was split
+        # from the state RNG at the top of step(), alongside the push and
+        # observation-noise keys - reusing one key for several draws would
+        # correlate the pushes with the commands.
         resample = (step % self.command_resample_steps) == 0
-        new_cmd, new_freq, new_height = self.sample_command(k)
+        new_cmd, new_freq, new_height = self.sample_command(k_cmd)
         cmd = jnp.where(resample, new_cmd, state["cmd"])
         gait_freq = jnp.where(resample, new_freq, state["gait_freq"])
         cmd_height = jnp.where(resample, new_height, state["cmd_height"])
+
+        # Episode time limit. Reported separately from `done` so the caller can
+        # bootstrap across it rather than treating it as a terminal state - the
+        # distinction chapter 4, 4.7 is about. brax's EpisodeWrapper also
+        # applies its own limit; this one makes the environment correct when
+        # driven directly.
+        truncated = (step >= self.max_episode_steps).astype(jnp.float32)
 
         return dict(
             data=data,
@@ -427,9 +566,14 @@ class Go2MJXEnv:
             feet_air_time=feet_air_time,
             last_contact=contact,
             step=step,
-            obs=self._obs(data, action, cmd, phase),
+            kp_scale=state["kp_scale"],
+            kd_scale=state["kd_scale"],
+            push_countdown=push_countdown,
+            push_remaining=push_remaining,
+            obs=self._obs(data, action, cmd, phase, k_obs),
             reward=reward,
             done=done,
+            truncated=truncated,
         ), terms
 
 
