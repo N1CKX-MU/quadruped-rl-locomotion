@@ -70,7 +70,7 @@ those attitudes while falling over — exactly the states where the value functi
 most needs to be well-behaved. $g_b$ is smooth everywhere and costs one
 quaternion rotation.
 
-Three numbers with a redundant constraint ($\|g_b\| = 1$) rather than two
+Three numbers with a redundant constraint ($\Vert g_b\Vert = 1$) rather than two
 independent angles is a good trade.
 
 Reset randomisation makes yaw uniform on $[-\pi, \pi)$ regardless, which is a
@@ -151,7 +151,7 @@ still worth doing, for three reasons:
 $a_{t-1}$, unscaled. Two jobs.
 
 **It makes the action-rate penalty learnable.** The reward includes
-$-\|a_t - a_{t-1}\|^2$. Without $a_{t-1}$ in the observation, that term is a
+$-\Vert a_t - a_{t-1}\Vert ^2$. Without $a_{t-1}$ in the observation, that term is a
 function of something the policy cannot see, so it appears as unexplainable
 noise in the reward and the policy can only reduce it by reducing its variance
 globally.
@@ -164,7 +164,7 @@ that $q$ and $\dot q$ do not fully capture.
 ## 9.7 The gait clock
 
 $$
-(\sin 2\pi\phi, \; \cos 2\pi\phi)
+(\sin 2\pi\phi, \quad \cos 2\pi\phi)
 $$
 
 Two numbers for one scalar $\phi \in [0,1)$, because $\phi$ is **circular**:
@@ -210,7 +210,7 @@ first thing to add for sim-to-real (chapter 16).
 ## 9.9 The action space
 
 $$
-a \in [-1, 1]^{12}, \qquad q^* = q_\text{nom} + 0.40\, a
+a \in [-1, 1]^{12}, \qquad q^* = q_\text{nom} + 0.40 a
 $$
 
 **Why position targets, not torques** — chapter 8, §8.5.

@@ -9,7 +9,7 @@ follow this chapter the rest is detail.
 We want to maximise
 
 $$
-J(\theta) = \mathbb{E}_{\tau \sim p_\theta}[\, R(\tau) \,],
+J(\theta) = \mathbb{E}_{\tau \sim p_\theta}[ R(\tau) ],
 \qquad R(\tau) = \sum_{t=0}^{T-1} \gamma^t r_t
 $$
 
@@ -18,13 +18,13 @@ and to do gradient ascent we need $\nabla_\theta J$.
 The difficulty is immediate. Write the expectation as an integral:
 
 $$
-J(\theta) = \int p_\theta(\tau) \, R(\tau) \, \mathrm{d}\tau
+J(\theta) = \int p_\theta(\tau) R(\tau) \mathrm{d}\tau
 $$
 
 so
 
 $$
-\nabla_\theta J(\theta) = \int \nabla_\theta p_\theta(\tau) \, R(\tau) \, \mathrm{d}\tau
+\nabla_\theta J(\theta) = \int \nabla_\theta p_\theta(\tau) R(\tau) \mathrm{d}\tau
 \tag{3.1}
 $$
 
@@ -41,7 +41,7 @@ The way out is one line of calculus. For any positive $p$,
 $$
 \nabla_\theta \log p_\theta(\tau) = \frac{\nabla_\theta p_\theta(\tau)}{p_\theta(\tau)}
 \quad\Longrightarrow\quad
-\nabla_\theta p_\theta(\tau) = p_\theta(\tau) \, \nabla_\theta \log p_\theta(\tau)
+\nabla_\theta p_\theta(\tau) = p_\theta(\tau) \nabla_\theta \log p_\theta(\tau)
 \tag{3.2}
 $$
 
@@ -49,8 +49,8 @@ Substituting into 3.1:
 
 $$
 \nabla_\theta J(\theta)
-= \int p_\theta(\tau) \, \nabla_\theta \log p_\theta(\tau) \, R(\tau) \, \mathrm{d}\tau
-= \mathbb{E}_{\tau \sim p_\theta}\!\left[\, \nabla_\theta \log p_\theta(\tau) \, R(\tau) \,\right]
+= \int p_\theta(\tau) \nabla_\theta \log p_\theta(\tau) R(\tau) \mathrm{d}\tau
+= \mathbb{E}_{\tau \sim p_\theta}\left[ \nabla_\theta \log p_\theta(\tau) R(\tau) \right]
 \tag{3.3}
 $$
 
@@ -85,7 +85,7 @@ the environment only through the rewards that the sampled trajectories happened
 to receive. Substituting 3.4 into 3.3:
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}_{\tau}\!\left[\, \left( \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right) R(\tau) \,\right]
+\nabla_\theta J(\theta) = \mathbb{E}_{\tau}\left[ \left( \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right) R(\tau) \right]
 \tag{3.5}
 $$
 
@@ -104,16 +104,16 @@ contribution of a single early reward $r_{t'}$ to the gradient term for a later
 action $a_t$ with $t > t'$:
 
 $$
-\mathbb{E}\!\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \cdot r_{t'} \right]
+\mathbb{E}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \cdot r_{t'} \right]
 $$
 
 Condition on everything up to and including $s_t$. Then $r_{t'}$ is a fixed
 number, and
 
 $$
-\mathbb{E}_{a_t \sim \pi_\theta}\!\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right]
+\mathbb{E}_{a_t \sim \pi_\theta}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right]
 = \int \pi_\theta(a \mid s_t) \frac{\nabla_\theta \pi_\theta(a \mid s_t)}{\pi_\theta(a \mid s_t)} \mathrm{d}a
-= \nabla_\theta \int \pi_\theta(a \mid s_t) \, \mathrm{d}a
+= \nabla_\theta \int \pi_\theta(a \mid s_t) \mathrm{d}a
 = \nabla_\theta 1 = 0
 \tag{3.6}
 $$
@@ -123,7 +123,7 @@ unbiased noise, pure variance with no signal. Dropping it gives the
 **reward-to-go** form:
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}\!\left[\, \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) \, G_t \,\right],
+\nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_{t=0}^{T-1} \nabla_\theta \log \pi_\theta(a_t \mid s_t) G_t \right],
 \qquad G_t = \sum_{k=t}^{T-1} \gamma^{k-t} r_k
 \tag{3.7}
 $$
@@ -141,14 +141,14 @@ The fix uses 3.6 again. Subtract any function $b(s_t)$ that does not depend on
 $a_t$:
 
 $$
-\mathbb{E}_{a_t}\!\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \, b(s_t) \right]
-= b(s_t) \, \mathbb{E}_{a_t}\!\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right] = 0
+\mathbb{E}_{a_t}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) b(s_t) \right]
+= b(s_t) \mathbb{E}_{a_t}\left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \right] = 0
 $$
 
 So for **any** state-dependent baseline $b$:
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}\!\left[\, \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) \big( G_t - b(s_t) \big) \,\right]
+\nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) \big( G_t - b(s_t) \big) \right]
 \tag{3.8}
 $$
 
@@ -161,16 +161,16 @@ Minimise the variance of the estimator with respect to $b$. Writing
 $g = \nabla_\theta \log \pi_\theta(a \mid s)$ and treating one component at a time,
 
 $$
-\operatorname{Var}\!\left[ g (G - b) \right] = \mathbb{E}\!\left[ g^2 (G-b)^2 \right] - \left( \mathbb{E}[g(G-b)] \right)^2
+\operatorname{Var}\left[ g (G - b) \right] = \mathbb{E}\left[ g^2 (G-b)^2 \right] - \left( \mathbb{E}[g(G-b)] \right)^2
 $$
 
 The second term does not depend on $b$ (it is the unbiased gradient). Setting
 $\partial / \partial b$ of the first term to zero:
 
 $$
--2\,\mathbb{E}\!\left[ g^2 (G - b) \right] = 0
+-2\mathbb{E}\left[ g^2 (G - b) \right] = 0
 \quad\Longrightarrow\quad
-b^\star = \frac{\mathbb{E}\!\left[ g^2 G \right]}{\mathbb{E}\!\left[ g^2 \right]}
+b^\star = \frac{\mathbb{E}\left[ g^2 G \right]}{\mathbb{E}\left[ g^2 \right]}
 \tag{3.9}
 $$
 
@@ -189,9 +189,9 @@ chapter 2 appears, not as a heuristic, but as the natural consequence of
 optimal variance reduction:
 
 $$
-\boxed{\;
-\nabla_\theta J(\theta) = \mathbb{E}\!\left[\, \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) \, A^\pi(s_t, a_t) \,\right]
-\;}
+\boxed{\quad 
+\nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) A^\pi(s_t, a_t) \right]
+\quad }
 \tag{3.10}
 $$
 
@@ -233,7 +233,7 @@ Autodiff frameworks minimise, and they differentiate a scalar. You do not code
 equation 3.10 directly — you code a surrogate scalar whose gradient equals it:
 
 $$
-L(\theta) = - \frac{1}{N} \sum_{i} \log \pi_\theta(a_i \mid s_i) \, \hat A_i
+L(\theta) = - \frac{1}{N} \sum_{i} \log \pi_\theta(a_i \mid s_i) \hat A_i
 \tag{3.11}
 $$
 

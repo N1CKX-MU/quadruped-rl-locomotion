@@ -3,7 +3,7 @@
 Chapter 1 ended with the objective:
 
 $$
-J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\!\left[\sum_{t=0}^{\infty} \gamma^t r_t \right]
+J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\left[\sum_{t=0}^{\infty} \gamma^t r_t \right]
 $$
 
 To improve it we need to answer a question the reward signal does not answer
@@ -15,7 +15,7 @@ quantity every algorithm in this book ultimately estimates.
 ## 2.1 The state-value function
 
 $$
-V^\pi(s) = \mathbb{E}_{\tau \sim \pi}\!\left[\, \sum_{k=0}^{\infty} \gamma^k r_{t+k} \;\middle|\; s_t = s \right]
+V^\pi(s) = \mathbb{E}_{\tau \sim \pi}\left[ \sum_{k=0}^{\infty} \gamma^k r_{t+k} \quad \middle|\quad s_t = s \right]
 \tag{2.1}
 $$
 
@@ -35,7 +35,7 @@ per step, less near states from which a fall is likely.
 ## 2.2 The action-value function
 
 $$
-Q^\pi(s, a) = \mathbb{E}_{\tau \sim \pi}\!\left[\, \sum_{k=0}^{\infty} \gamma^k r_{t+k} \;\middle|\; s_t = s,\, a_t = a \right]
+Q^\pi(s, a) = \mathbb{E}_{\tau \sim \pi}\left[ \sum_{k=0}^{\infty} \gamma^k r_{t+k} \quad \middle|\quad s_t = s, a_t = a \right]
 \tag{2.2}
 $$
 
@@ -43,7 +43,7 @@ Same thing, except the first action is forced to be $a$ and only afterwards do
 we follow $\pi$. The two are related by averaging over the first action:
 
 $$
-V^\pi(s) = \mathbb{E}_{a \sim \pi(\cdot \mid s)}\!\left[\, Q^\pi(s, a) \,\right]
+V^\pi(s) = \mathbb{E}_{a \sim \pi(\cdot \mid s)}\left[ Q^\pi(s, a) \right]
 \tag{2.3}
 $$
 
@@ -59,7 +59,7 @@ $$
 Equation 2.3 gives the property that makes the advantage useful:
 
 $$
-\mathbb{E}_{a \sim \pi(\cdot \mid s)}\!\left[\, A^\pi(s, a) \,\right] = 0
+\mathbb{E}_{a \sim \pi(\cdot \mid s)}\left[ A^\pi(s, a) \right] = 0
 \tag{2.5}
 $$
 
@@ -88,14 +88,14 @@ simulating to infinity.
 Split off the first term of the sum in equation 2.1:
 
 $$
-V^\pi(s) = \mathbb{E}_{a \sim \pi,\; s' \sim P}\!\left[\, r(s, a, s') + \gamma V^\pi(s') \,\right]
+V^\pi(s) = \mathbb{E}_{a \sim \pi,\quad s' \sim P}\left[ r(s, a, s') + \gamma V^\pi(s') \right]
 \tag{2.6}
 $$
 
 and similarly
 
 $$
-Q^\pi(s, a) = \mathbb{E}_{s' \sim P}\!\left[\, r(s, a, s') + \gamma \,\mathbb{E}_{a' \sim \pi}\!\left[ Q^\pi(s', a') \right] \right]
+Q^\pi(s, a) = \mathbb{E}_{s' \sim P}\left[ r(s, a, s') + \gamma \mathbb{E}_{a' \sim \pi}\left[ Q^\pi(s', a') \right] \right]
 \tag{2.7}
 $$
 
@@ -110,11 +110,11 @@ Starting from 2.1 and writing $G_t = r_t + \gamma G_{t+1}$:
 $$
 \begin{aligned}
 V^\pi(s)
-&= \mathbb{E}\!\left[ G_t \mid s_t = s \right] \\
-&= \mathbb{E}\!\left[ r_t + \gamma G_{t+1} \mid s_t = s \right] \\
-&= \mathbb{E}\!\left[ r_t \mid s_t = s \right] + \gamma \,\mathbb{E}\!\left[ G_{t+1} \mid s_t = s \right] \\
-&= \mathbb{E}\!\left[ r_t \mid s_t = s \right] + \gamma \,\mathbb{E}_{s'}\!\left[ \mathbb{E}\!\left[ G_{t+1} \mid s_{t+1} = s' \right] \right] \\
-&= \mathbb{E}\!\left[ r_t + \gamma V^\pi(s') \right]
+&= \mathbb{E}\left[ G_t \mid s_t = s \right] \\
+&= \mathbb{E}\left[ r_t + \gamma G_{t+1} \mid s_t = s \right] \\
+&= \mathbb{E}\left[ r_t \mid s_t = s \right] + \gamma \mathbb{E}\left[ G_{t+1} \mid s_t = s \right] \\
+&= \mathbb{E}\left[ r_t \mid s_t = s \right] + \gamma \mathbb{E}_{s'}\left[ \mathbb{E}\left[ G_{t+1} \mid s_{t+1} = s' \right] \right] \\
+&= \mathbb{E}\left[ r_t + \gamma V^\pi(s') \right]
 \end{aligned}
 $$
 
@@ -128,8 +128,8 @@ is, underneath, a use of the Markov property.
 For completeness, the optimal value functions satisfy
 
 $$
-V^*(s) = \max_a \; \mathbb{E}_{s'}\!\left[ r + \gamma V^*(s') \right], \qquad
-Q^*(s, a) = \mathbb{E}_{s'}\!\left[ r + \gamma \max_{a'} Q^*(s', a') \right]
+V^*(s) = \max_a \quad \mathbb{E}_{s'}\left[ r + \gamma V^*(s') \right], \qquad
+Q^*(s, a) = \mathbb{E}_{s'}\left[ r + \gamma \max_{a'} Q^*(s', a') \right]
 \tag{2.8}
 $$
 

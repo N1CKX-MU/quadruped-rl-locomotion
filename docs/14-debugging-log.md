@@ -617,7 +617,7 @@ $$
 r = \tfrac14 \sum_i \big[ c_i d_i + (1-c_i)(1-d_i) \big]
 $$
 
-$c_i \in \{0, 1\}$; there is nothing in between. On the standing robot the foot
+$c_i \in \lbrace 0, 1\rbrace $; there is nothing in between. On the standing robot the foot
 geoms sit at 9.5 mm. Raising a foot to 9.4 mm leaves $c_i$ unchanged and
 therefore leaves the reward unchanged. **The gradient is exactly zero all the
 way up to a discontinuity** — and that discontinuity is precisely the barrier a
@@ -638,7 +638,7 @@ not help: three times zero is still zero.
 A new term, `feet_clearance`, weight $-30$:
 
 $$
-r = \sum_{i=1}^{4} (1 - d_i)\,(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
+r = \sum_{i=1}^{4} (1 - d_i)(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
 $$
 
 Foot height is continuous, so this pulls the swing foot upward from the first
@@ -717,7 +717,7 @@ Credit air time up to the scheduled swing duration, rather than offsetting it by
 a constant:
 
 $$
-r = \mathbb{1}\big[\|\mathbf{c}\| > 0.1\big] \sum_{i=1}^{4} \min\!\big(t^\text{air}_i,\ t_\text{swing}\big)\, \mathbb{1}[\text{foot } i \text{ just landed}]
+r = \mathbb{1}\big[\Vert \mathbf{c}\Vert > 0.1\big] \sum_{i=1}^{4} \min\big(t^\text{air}_i,\ t_\text{swing}\big) \mathbb{1}[\text{foot } i \text{ just landed}]
 $$
 
 with $t_\text{swing} = (1 - \beta)/f$ computed from the **active gait command**.

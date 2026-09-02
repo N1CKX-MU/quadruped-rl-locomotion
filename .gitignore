@@ -21,3 +21,6 @@ assets/*.gif
 .wsl_setup*.sh
 .dnsprobe.py
 .train_gpu.sh
+
+# scratch: PR body, not part of the project
+PR_DESCRIPTION.md

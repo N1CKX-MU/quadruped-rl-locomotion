@@ -20,7 +20,7 @@ containing data from many past policies. They can do this because they learn
 $Q(s,a)$, and the Bellman optimality equation (2.8),
 
 $$
-Q^*(s,a) = \mathbb{E}_{s'}\!\left[ r + \gamma \max_{a'} Q^*(s',a') \right]
+Q^*(s,a) = \mathbb{E}_{s'}\left[ r + \gamma \max_{a'} Q^*(s',a') \right]
 $$
 
 does not reference the policy that generated the transition at all. Any

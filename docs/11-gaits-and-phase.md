@@ -70,7 +70,7 @@ Introduce a scalar $\phi \in [0, 1)$ advancing at the commanded step frequency
 $f$:
 
 $$
-\phi_{t+1} = \big(\phi_t + f \, \Delta t\big) \bmod 1
+\phi_{t+1} = \big(\phi_t + f \Delta t\big) \bmod 1
 \tag{11.1}
 $$
 
@@ -100,7 +100,7 @@ A useful sanity check, and a test: averaged over a full cycle, each foot's
 desired contact must equal the duty factor exactly.
 
 $$
-\frac{1}{1}\int_0^1 d_i(\phi)\,\mathrm{d}\phi = \beta
+\frac{1}{1}\int_0^1 d_i(\phi)\mathrm{d}\phi = \beta
 $$
 
 ```python
@@ -113,7 +113,7 @@ def test_duty_factor_is_the_stance_fraction():
 ## 11.4 The phase reward
 
 $$
-r_\text{gait} = \frac{1}{4} \sum_{i=1}^{4} \Big[ c_i \, d_i + (1 - c_i)(1 - d_i) \Big]
+r_\text{gait} = \frac{1}{4} \sum_{i=1}^{4} \Big[ c_i d_i + (1 - c_i)(1 - d_i) \Big]
 \tag{11.3}
 $$
 
@@ -170,7 +170,7 @@ term cost another million.
 ## 11.5 The clock has to be in the observation
 
 $$
-o_{48:50} = \big(\sin 2\pi\phi, \; \cos 2\pi\phi\big)
+o_{48:50} = \big(\sin 2\pi\phi, \quad \cos 2\pi\phi\big)
 $$
 
 Without this the phase reward is unlearnable. From the policy's point of view,
