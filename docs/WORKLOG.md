@@ -186,3 +186,8 @@ Ordered by what I would do next.
 - **`brax` 0.14.2 calls `jax.device_put_replicated`**, removed in JAX 0.11.
   `requirements-mjx.txt` pins JAX 0.7.2 for this reason.
 - **`pip install -r requirements.txt` gives the CPU build of PyTorch.**
+- **brax's `num_evals` defaults to 1.** `progress_fn` fires once per eval, so a
+  long run prints *nothing* until it finishes. Combined with piping through
+  `grep` (which block-buffers on a non-tty), a healthy 2-hour run is
+  indistinguishable from a hung one. `mjx/train_mjx.py` now defaults
+  `--num-evals 20` and flushes; never pipe a long run through `grep`.

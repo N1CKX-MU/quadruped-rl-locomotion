@@ -192,6 +192,10 @@ def main():
     p.add_argument("--num-updates-per-batch", type=int, default=4)
     p.add_argument("--episode-length", type=int, default=1000)
     p.add_argument("--seed", type=int, default=0)
+    # brax calls progress_fn once per EVAL, and num_evals defaults to 1 - which
+    # means a 40M-step run prints nothing at all until it finishes. A run you
+    # cannot watch is a run you cannot tell apart from a hung one.
+    p.add_argument("--num-evals", type=int, default=20)
     p.add_argument("--out", default="models/go2_mjx_params.pkl")
     p.add_argument("--no-domain-randomization", action="store_true",
                    help="Disable model-level friction/mass randomisation. The "
@@ -222,7 +226,7 @@ def main():
             % (args.num_envs, args.batch_size, args.num_minibatches,
                expected, args.num_envs // args.num_minibatches))
 
-    print("jax devices:", jax.devices())
+    print("jax devices:", jax.devices(), flush=True)
     if args.smoke:
         print("SMOKE MODE - verifying the wiring, not training anything.")
     elif jax.devices()[0].platform == "cpu":
@@ -248,8 +252,9 @@ def main():
         reward = metrics.get("eval/episode_reward", float("nan"))
         length = metrics.get("eval/avg_episode_length", float("nan"))
         fps = step / max(times[-1] - times[0], 1e-9)
-        print("step %10d  reward %8.2f  len %7.1f  %8.0f steps/s"
-              % (step, reward, length, fps))
+        eta = ((args.timesteps - step) / fps / 60.0) if fps > 0 and step else 0.0
+        print("step %10d/%d  reward %8.2f  len %7.1f  %7.0f steps/s  eta %5.1f min"
+              % (step, args.timesteps, reward, length, fps, eta), flush=True)
 
     # Model-level domain randomisation (friction, link masses). brax builds the
     # batched model and threads the in_axes through for us; state-level
@@ -282,6 +287,7 @@ def main():
         normalize_observations=True,
         network_factory=network_factory,
         seed=args.seed,
+        num_evals=args.num_evals,
         progress_fn=progress,
     )
 
