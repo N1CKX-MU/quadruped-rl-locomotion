@@ -3,7 +3,7 @@
 Chapter 3 ended with
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}\!\left[ \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) \, A^\pi(s_t, a_t) \right]
+\nabla_\theta J(\theta) = \mathbb{E}\left[ \sum_t \nabla_\theta \log \pi_\theta(a_t \mid s_t) A^\pi(s_t, a_t) \right]
 $$
 
 and one unresolved problem: we do not know $A^\pi$. This chapter is about
@@ -22,7 +22,7 @@ that turns high-variance returns into low-variance advantages. It is trained by
 regression:
 
 $$
-L_V(\psi) = \mathbb{E}\!\left[ \big( \hat V_\psi(s_t) - \hat G_t \big)^2 \right]
+L_V(\psi) = \mathbb{E}\left[ \big( \hat V_\psi(s_t) - \hat G_t \big)^2 \right]
 \tag{4.1}
 $$
 
@@ -72,7 +72,7 @@ $$
 \hat A_t^{(1)} &= r_t + \gamma \hat V(s_{t+1}) - \hat V(s_t) = \delta_t \\
 \hat A_t^{(2)} &= r_t + \gamma r_{t+1} + \gamma^2 \hat V(s_{t+2}) - \hat V(s_t) = \delta_t + \gamma \delta_{t+1} \\
 \hat A_t^{(3)} &= \delta_t + \gamma \delta_{t+1} + \gamma^2 \delta_{t+2} \\
-&\;\;\vdots \\
+&\quad \quad \vdots \\
 \hat A_t^{(n)} &= \sum_{l=0}^{n-1} \gamma^l \delta_{t+l}
 \end{aligned}
 \tag{4.3}
@@ -125,12 +125,12 @@ $$
 && \text{(each } \delta_{t+l} \text{ appears in every } n > l\text{)} \\
 &= (1-\lambda) \sum_{l=0}^{\infty} \gamma^l \delta_{t+l} \cdot \frac{\lambda^{l}}{1-\lambda}
 && \textstyle \left(\sum_{n=l+1}^{\infty}\lambda^{n-1} = \lambda^l/(1-\lambda)\right) \\
-&= \sum_{l=0}^{\infty} (\gamma\lambda)^l \, \delta_{t+l}
+&= \sum_{l=0}^{\infty} (\gamma\lambda)^l \delta_{t+l}
 \end{aligned}
 $$
 
 $$
-\boxed{\;\hat A_t^{\text{GAE}} = \sum_{l=0}^{\infty} (\gamma\lambda)^l \, \delta_{t+l}\;}
+\boxed{\quad \hat A_t^{\text{GAE}} = \sum_{l=0}^{\infty} (\gamma\lambda)^l \delta_{t+l}\quad }
 \tag{4.5}
 $$
 
@@ -138,7 +138,7 @@ A single exponentially-discounted sum of TD errors. All the machinery collapses
 to something you can compute in one backwards pass:
 
 $$
-\hat A_t = \delta_t + \gamma\lambda \, \hat A_{t+1}
+\hat A_t = \delta_t + \gamma\lambda \hat A_{t+1}
 \tag{4.6}
 $$
 

@@ -36,9 +36,9 @@ $\pi_\theta$ using samples drawn from $\pi_{\theta_\text{old}}$. Importance
 sampling does exactly that:
 
 $$
-\mathbb{E}_{x \sim q}[f(x)] = \int q(x) f(x) \, \mathrm{d}x
-= \int p(x) \frac{q(x)}{p(x)} f(x) \, \mathrm{d}x
-= \mathbb{E}_{x \sim p}\!\left[ \frac{q(x)}{p(x)} f(x) \right]
+\mathbb{E}_{x \sim q}[f(x)] = \int q(x) f(x) \mathrm{d}x
+= \int p(x) \frac{q(x)}{p(x)} f(x) \mathrm{d}x
+= \mathbb{E}_{x \sim p}\left[ \frac{q(x)}{p(x)} f(x) \right]
 \tag{5.1}
 $$
 
@@ -53,7 +53,7 @@ $$
 and the policy gradient (3.10) becomes computable from old data:
 
 $$
-\nabla_\theta J(\theta) = \mathbb{E}_{\tau \sim \pi_{\theta_\text{old}}}\!\left[ \sum_t \rho_t(\theta) \, \nabla_\theta \log \pi_\theta(a_t \mid s_t) \, \hat A_t \right]
+\nabla_\theta J(\theta) = \mathbb{E}_{\tau \sim \pi_{\theta_\text{old}}}\left[ \sum_t \rho_t(\theta) \nabla_\theta \log \pi_\theta(a_t \mid s_t) \hat A_t \right]
 \tag{5.3}
 $$
 
@@ -85,7 +85,7 @@ than $O(10^{-20})$.
 Define the **conservative policy iteration** objective:
 
 $$
-L^{\text{CPI}}(\theta) = \mathbb{E}_t\!\left[ \rho_t(\theta) \, \hat A_t \right]
+L^{\text{CPI}}(\theta) = \mathbb{E}_t\left[ \rho_t(\theta) \hat A_t \right]
 \tag{5.4}
 $$
 
@@ -108,8 +108,8 @@ by KL divergence:
 
 $$
 \begin{aligned}
-\max_\theta \quad & \mathbb{E}_t\!\left[ \rho_t(\theta) \hat A_t \right] \\
-\text{s.t.} \quad & \mathbb{E}_t\!\left[ D_{\mathrm{KL}}\big( \pi_{\theta_\text{old}}(\cdot \mid s_t) \,\|\, \pi_\theta(\cdot \mid s_t) \big) \right] \le \delta
+\max_\theta \quad & \mathbb{E}_t\left[ \rho_t(\theta) \hat A_t \right] \\
+\text{s.t.} \quad & \mathbb{E}_t\left[ D_{\mathrm{KL}}\big( \pi_{\theta_\text{old}}(\cdot \mid s_t) \Vert \pi_\theta(\cdot \mid s_t) \big) \right] \le \delta
 \end{aligned}
 \tag{5.5}
 $$
@@ -142,9 +142,9 @@ The insight is that we do not need to *forbid* large steps. We only need to
 remove the *incentive* to take them.
 
 $$
-\boxed{\;
-L^{\text{CLIP}}(\theta) = \mathbb{E}_t\!\left[ \min\Big( \rho_t(\theta) \hat A_t, \;\; \operatorname{clip}\big(\rho_t(\theta), 1-\varepsilon, 1+\varepsilon\big) \hat A_t \Big) \right]
-\;}
+\boxed{\quad 
+L^{\text{CLIP}}(\theta) = \mathbb{E}_t\left[ \min\Big( \rho_t(\theta) \hat A_t, \quad \quad \operatorname{clip}\big(\rho_t(\theta), 1-\varepsilon, 1+\varepsilon\big) \hat A_t \Big) \right]
+\quad }
 \tag{5.6}
 $$
 
@@ -199,12 +199,12 @@ $$
 ### The value loss, and clipping it too
 
 $$
-L^{V}(\psi) = \mathbb{E}_t \Big[ \max\Big( (\hat V_\psi(s_t) - \hat G_t)^2, \; (\hat V^{\text{clip}}_\psi(s_t) - \hat G_t)^2 \Big) \Big]
+L^{V}(\psi) = \mathbb{E}_t \Big[ \max\Big( (\hat V_\psi(s_t) - \hat G_t)^2, \quad (\hat V^{\text{clip}}_\psi(s_t) - \hat G_t)^2 \Big) \Big]
 \tag{5.8}
 $$
 
 $$
-\hat V^{\text{clip}}_\psi(s_t) = \hat V_{\psi_\text{old}}(s_t) + \operatorname{clip}\!\big( \hat V_\psi(s_t) - \hat V_{\psi_\text{old}}(s_t), -\varepsilon_v, +\varepsilon_v \big)
+\hat V^{\text{clip}}_\psi(s_t) = \hat V_{\psi_\text{old}}(s_t) + \operatorname{clip}\big( \hat V_\psi(s_t) - \hat V_{\psi_\text{old}}(s_t), -\varepsilon_v, +\varepsilon_v \big)
 $$
 
 Same motivation as the policy clip. The critic is fit to targets built from its
@@ -220,7 +220,7 @@ critic lags and the advantages are noise.
 ### The entropy bonus
 
 $$
-\mathcal{H}[\pi] = -\int \pi(a \mid s) \log \pi(a \mid s)\, \mathrm{d}a
+\mathcal{H}[\pi] = -\int \pi(a \mid s) \log \pi(a \mid s) \mathrm{d}a
 $$
 
 For a diagonal Gaussian this has a closed form:
@@ -256,7 +256,7 @@ is unbiased but can go negative on a finite sample, which is embarrassing for a
 divergence. Schulman's low-variance alternative:
 
 $$
-\widehat{\mathrm{KL}} = \mathbb{E}_t\!\left[ (\rho_t - 1) - \log \rho_t \right]
+\widehat{\mathrm{KL}} = \mathbb{E}_t\left[ (\rho_t - 1) - \log \rho_t \right]
 \tag{5.10}
 $$
 

@@ -57,7 +57,7 @@ most once per rollout.
 in its info dict:
 
 $$
-\text{score} = \tfrac12 \exp\!\left(-\frac{e_\text{lin}^2}{\sigma_v}\right) + \tfrac12 \exp\!\left(-\frac{e_\text{ang}^2}{\sigma_\omega}\right)
+\text{score} = \tfrac12 \exp\left(-\frac{e_\text{lin}^2}{\sigma_v}\right) + \tfrac12 \exp\left(-\frac{e_\text{ang}^2}{\sigma_\omega}\right)
 \tag{12.1}
 $$
 
@@ -80,7 +80,7 @@ oscillating on rollout-to-rollout noise.
 `final`:
 
 $$
-[\,\text{lo}, \text{hi}\,]_\ell = (1-\ell)\,[\,\text{lo}, \text{hi}\,]_\text{init} + \ell\,[\,\text{lo}, \text{hi}\,]_\text{final}
+[\text{lo}, \text{hi}]_\ell = (1-\ell)[\text{lo}, \text{hi}]_\text{init} + \ell[\text{lo}, \text{hi}]_\text{final}
 $$
 
 | | initial ($\ell=0$) | final ($\ell=1$) |

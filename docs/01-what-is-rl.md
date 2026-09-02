@@ -98,7 +98,7 @@ Everything in this book uses stochastic policies, specifically diagonal
 Gaussians:
 
 $$
-\pi_\theta(a \mid s) = \mathcal{N}\!\left(a \;;\; \mu_\theta(s), \operatorname{diag}(\sigma^2)\right)
+\pi_\theta(a \mid s) = \mathcal{N}\left(a \quad ;\quad \mu_\theta(s), \operatorname{diag}(\sigma^2)\right)
 \tag{1.2}
 $$
 
@@ -143,7 +143,7 @@ $$
 with probability
 
 $$
-p_\theta(\tau) = p(s_0) \prod_{t=0}^{T-1} \pi_\theta(a_t \mid s_t) \, P(s_{t+1} \mid s_t, a_t)
+p_\theta(\tau) = p(s_0) \prod_{t=0}^{T-1} \pi_\theta(a_t \mid s_t) P(s_{t+1} \mid s_t, a_t)
 \tag{1.3}
 $$
 
@@ -163,8 +163,8 @@ $$
 and the objective is to maximise its expectation:
 
 $$
-J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\!\left[\, G_0 \,\right]
-= \mathbb{E}_{\tau \sim p_\theta}\!\left[\, \sum_{t=0}^{\infty} \gamma^t r_t \,\right]
+J(\theta) = \mathbb{E}_{\tau \sim p_\theta}\left[ G_0 \right]
+= \mathbb{E}_{\tau \sim p_\theta}\left[ \sum_{t=0}^{\infty} \gamma^t r_t \right]
 \tag{1.5}
 $$
 
@@ -249,16 +249,16 @@ To make all of the above stop being abstract, here is the actual MDP.
 **State** (as observed; 50 dimensions — see chapter 9):
 
 $$
-o_t = \big[\;
-\underbrace{g_b}_{3} \;
-\underbrace{\omega_b}_{3} \;
-\underbrace{v_b}_{3} \;
-\underbrace{q - q_\text{nom}}_{12} \;
-\underbrace{\dot q}_{12} \;
-\underbrace{a_{t-1}}_{12} \;
-\underbrace{c}_{3} \;
+o_t = \big[\quad 
+\underbrace{g_b}_{3} \quad 
+\underbrace{\omega_b}_{3} \quad 
+\underbrace{v_b}_{3} \quad 
+\underbrace{q - q_\text{nom}}_{12} \quad 
+\underbrace{\dot q}_{12} \quad 
+\underbrace{a_{t-1}}_{12} \quad 
+\underbrace{c}_{3} \quad 
 \underbrace{\sin 2\pi\phi, \cos 2\pi\phi}_{2}
-\;\big]
+\quad \big]
 $$
 
 where $g_b$ is gravity in the base frame, $\omega_b$ and $v_b$ are base-frame
@@ -269,13 +269,13 @@ $(v_x^*, v_y^*, \omega_z^*)$, and $\phi$ the gait phase.
 target is
 
 $$
-q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.40 \text{ rad}
+q^*_t = q_\text{nom} + \alpha a_t, \qquad \alpha = 0.40 \text{ rad}
 $$
 
 and a PD controller converts that to torque at each physics substep:
 
 $$
-\tau = k_p (q^* - q) - k_d \dot q, \qquad k_p = 55, \; k_d = 1.4
+\tau = k_p (q^* - q) - k_d \dot q, \qquad k_p = 55, \quad k_d = 1.4
 \tag{1.6}
 $$
 

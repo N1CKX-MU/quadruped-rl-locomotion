@@ -71,13 +71,13 @@ corresponding to "forward" the instant the robot yaws.
 The conversion is one line:
 
 $$
-v_b = R(q)^{\top} \, v_w
+v_b = R(q)^{\top} v_w
 $$
 
 implemented as `quat_rotate_inverse` in `envs/go2_env.py`, using the identity
 
 $$
-q^{*} v q = v - 2w (u \times v) + 2\, u \times (u \times v), \qquad u = (q_x, q_y, q_z)
+q^{*} v q = v - 2w (u \times v) + 2 u \times (u \times v), \qquad u = (q_x, q_y, q_z)
 \tag{8.1}
 $$
 
@@ -176,7 +176,7 @@ Always check which kind your model has.
 The policy outputs **position targets**, not torques:
 
 $$
-q^*_t = q_\text{nom} + \alpha \, a_t, \qquad \alpha = 0.40\ \text{rad}
+q^*_t = q_\text{nom} + \alpha a_t, \qquad \alpha = 0.40\ \text{rad}
 $$
 
 and a joint-space PD law converts them:

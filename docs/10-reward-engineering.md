@@ -38,7 +38,7 @@ which is why a broken term survived five documented training runs.
 **`track_lin_vel_xy`** — weight $+1.5$
 
 $$
-r = \exp\!\left( -\frac{\| \mathbf{v}^*_{xy} - \mathbf{v}_{xy} \|^2}{\sigma_v} \right), \qquad \sigma_v = 0.20
+r = \exp\left( -\frac{\Vert \mathbf{v}^*_{xy} - \mathbf{v}_{xy} \Vert ^2}{\sigma_v} \right), \qquad \sigma_v = 0.20
 \tag{10.1}
 $$
 
@@ -47,7 +47,7 @@ The main objective. Both axes, base frame. Bounded in $(0, 1]$.
 **`track_ang_vel_yaw`** — weight $+0.75$
 
 $$
-r = \exp\!\left( -\frac{(\omega_z^* - \omega_z)^2}{\sigma_\omega} \right), \qquad \sigma_\omega = 0.25
+r = \exp\left( -\frac{(\omega_z^* - \omega_z)^2}{\sigma_\omega} \right), \qquad \sigma_\omega = 0.25
 \tag{10.2}
 $$
 
@@ -67,7 +67,7 @@ of feet doing the right thing", in $[0,1]$.
 **`feet_clearance`** — weight $-30.0$
 
 $$
-r = \sum_{i=1}^{4} (1 - d_i)\,(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
+r = \sum_{i=1}^{4} (1 - d_i)(h_i - h^*)^2, \qquad h^* = 0.08\ \text{m}
 \tag{10.3b}
 $$
 
@@ -77,7 +77,7 @@ this term, rather than `gait_phase`, is what makes stepping discoverable.
 **`feet_air_time`** — weight $+1.0$
 
 $$
-r = \mathbb{1}\big[\|\mathbf{c}\| > 0.1\big] \sum_{i=1}^{4} \min\!\big(t^{\text{air}}_i,\ t_{\text{swing}}\big) \, \mathbb{1}[\text{foot } i \text{ just landed}]
+r = \mathbb{1}\big[\Vert \mathbf{c}\Vert > 0.1\big] \sum_{i=1}^{4} \min\big(t^{\text{air}}_i,\ t_{\text{swing}}\big) \mathbb{1}[\text{foot } i \text{ just landed}]
 \tag{10.4}
 $$
 
@@ -98,16 +98,16 @@ reward of about 2.5 - and its own logs record the result. See §10.5.
 | Term | Weight | Formula | Purpose |
 |---|---|---|---|
 | `lin_vel_z` | $-2.0$ | $v_z^2$ | stop the trunk bouncing |
-| `ang_vel_xy` | $-0.05$ | $\|\omega_{xy}\|^2$ | stop the body wobbling |
-| `orientation` | $-1.0$ | $\|g_{b,xy}\|^2$ | stay level |
+| `ang_vel_xy` | $-0.05$ | $\Vert \omega_{xy}\Vert ^2$ | stop the body wobbling |
+| `orientation` | $-1.0$ | $\Vert g_{b,xy}\Vert ^2$ | stay level |
 | `base_height` | $-5.0$ | $(h - h^*)^2$ | hold the commanded ride height |
 | `torques` | $-2\times10^{-4}$ | $\sum \tau_i^2$ | energy |
 | `joint_acceleration` | $-2.5\times10^{-7}$ | $\sum ((\dot q_i - \dot q_i^{-})/\Delta t)^2$ | no judder |
-| `action_rate` | $-0.01$ | $\|a - a^{-}\|^2$ | smooth commands |
+| `action_rate` | $-0.01$ | $\Vert a - a^{-}\Vert ^2$ | smooth commands |
 | `joint_limits` | $-10.0$ | out-of-soft-range excess | do not lean on the endstops |
 | `collision` | $-1.0$ | count of non-foot ground contacts | knees off the floor |
-| `feet_slip` | $-0.05$ | $\sum_i c_i \|\mathbf{v}^{\text{foot}}_{i,xy}\|^2$ | no skating |
-| `stand_still` | $-0.5$ | $\mathbb{1}[\|\mathbf{c}\| < 0.1] \sum_i \|q_i - q_{\text{nom},i}\|$ | actually stop when told |
+| `feet_slip` | $-0.05$ | $\sum_i c_i \Vert \mathbf{v}^{\text{foot}}_{i,xy}\Vert ^2$ | no skating |
+| `stand_still` | $-0.5$ | $\mathbb{1}[\Vert \mathbf{c}\Vert < 0.1] \sum_i \Vert q_i - q_{\text{nom},i}\Vert $ | actually stop when told |
 
 Three of these deserve a note.
 
@@ -131,7 +131,7 @@ Why is velocity tracking $\exp(-e^2/\sigma)$ and not $-e^2$?
 
 **A quadratic cost is unbounded below.** Early in training $e$ is large — the
 robot is on its side — so $-e^2$ dominates every other term. And the fastest way
-to reduce it is to reduce $\|v\|$, i.e. to stop moving. A negative-quadratic
+to reduce it is to reduce $\Vert v\Vert $, i.e. to stop moving. A negative-quadratic
 tracking reward actively teaches a beginner policy to freeze.
 
 **The exponential is bounded and its gradient is where you want it.**
@@ -277,7 +277,7 @@ was a **borrowed convention that stopped being true**.
 The legged_gym form pays for air time beyond half a second:
 
 $$
-r = \sum_i \big(t^{\text{air}}_i - 0.5\big)\,\mathbb{1}[\text{foot } i \text{ just landed}]
+r = \sum_i \big(t^{\text{air}}_i - 0.5\big)\mathbb{1}[\text{foot } i \text{ just landed}]
 $$
 
 That is sensible where the gait frequency is *emergent* and the resulting
@@ -330,11 +330,11 @@ nothing, no algorithm will find it, and you will spend days blaming exploration.
 | $2.0 \exp(-(v_x^* - v_x)^2/0.25)$ | 2.0 | world frame (B2); ignores $v_y^*$ (B3) |
 | $0.5 \exp(-(\omega_z^* - \omega_z)^2/0.25)$ | 0.5 | world frame |
 | alive | 0.5 | **too large** |
-| $-0.5\,\lvert v_y \rvert$ | | punishes strafing unconditionally (B3) |
-| $-1.0\,\|g_{xy}\|^2$ | | correct |
-| $-0.01\,\|a - a^-\|^2$ | | correct |
+| $-0.5\lvert v_y \rvert$ | | punishes strafing unconditionally (B3) |
+| $-1.0\Vert g_{xy}\Vert ^2$ | | correct |
+| $-0.01\Vert a - a^-\Vert ^2$ | | correct |
 | $-10^{-4}\sum\tau^2$ | | correct |
-| $+0.1\,\lvert c_{FL}c_{RR} - c_{FR}c_{RL}\rvert$ | | **broken** (§10.6) |
+| $+0.1\lvert c_{FL}c_{RR} - c_{FR}c_{RL}\rvert$ | | **broken** (§10.6) |
 
 Add up what a **motionless upright** v1 robot collected per step:
 
