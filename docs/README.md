@@ -34,7 +34,7 @@ If you want to **understand what went wrong and how it was found**, read 14. It
 is the debugging log for the v1 → v2 rewrite, and it is the most practically
 useful chapter in the book. It is also the honest one: every bug listed there
 was really in the code, and several of them were subtle enough to survive five
-documented training runs. Four of the twenty were mine, introduced during the
+documented training runs. Six of the twenty-two were mine, introduced during the
 v2 rewrite and caught the same way.
 
 If you are **about to start a training run**, read 13 first. It tells you what
@@ -70,7 +70,7 @@ difference between debugging in an afternoon and debugging in a week.
 | # | Chapter | What it covers |
 |---|---------|----------------|
 | 13 | [Reading a training run](13-training-diagnostics.md) | Explained variance, approximate KL, clip fraction, entropy; what each failure mode looks like |
-| 14 | [The debugging log](14-debugging-log.md) | Twenty defects (16 in v1, 4 found in v2): the reasoning that found each one, the evidence, and the fix |
+| 14 | [The debugging log](14-debugging-log.md) | Twenty-two defects (16 in v1, 6 found in v2): the reasoning that found each one, the evidence, and the fix |
 | 15 | [Results](15-results.md) | v1 vs v2, measured on the same axes |
 | 16 | [What sim-to-real would take](16-sim-to-real.md) | The gaps that remain, honestly enumerated. Not implemented — explained |
 | 17 | [Scaling with MJX](17-mjx-and-scaling.md) | Why 16 CPU environments is the wrong shape for this problem, and what to do about it |

@@ -69,6 +69,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import mujoco
+import numpy as np
 from mujoco import mjx
 
 from envs import gait as gait_mod
@@ -78,6 +79,45 @@ from envs.paths import resolve_asset_path
 
 DEFAULT_XML = "mujoco_menagerie/unitree_go2/scene_mjx.xml"
 FOOT_GEOM_NAMES = ("FL", "FR", "RL", "RR")
+
+# Joint torque limits of the Go2 in N·m, in actuator order: (hip, thigh, calf)
+# for FL, FR, RL, RR. These are the ctrlrange of the motor actuators in
+# scene.xml - the model the CPU environment uses - and tests/test_mjx.py asserts
+# that they stay equal.
+GO2_TORQUE_LIMITS = np.tile([23.7, 23.7, 45.43], 4)
+
+
+def make_torque_actuators(m: mujoco.MjModel) -> None:
+    """Turn the MJX model's position servos into torque motors, in place (B22).
+
+    Menagerie ships two Go2 models with DIFFERENT actuators. ``scene.xml`` uses
+    ``motor`` actuators: ``ctrl`` is a joint torque. ``scene_mjx.xml`` uses
+    ``position`` actuators: ``ctrl`` is a joint-angle *target*, tracked by a
+    built-in PD with kp=50, kd=0.5, and ``ctrlrange`` is the joint's travel in
+    radians.
+
+    This environment computes its own PD torque in ``step()`` - the same law,
+    at the same rate, as the CPU environment - and writes it to ``ctrl``. On the
+    unmodified MJX model that torque is read as an angle, clamped to the joint
+    range, and chased by a second PD. At zero action the torque is ~0, so every
+    calf is driven to its -0.848 rad limit instead of its -1.8 rad standing
+    angle: the legs snap straight and the robot launches itself off the ground.
+    Measured: base height 0.30 -> 0.39 m within 11 steps, fewer than 0.2 of 4
+    feet in contact, and 90% of environments terminated on a trunk strike by
+    step 30 - under zero action, with randomisation and pushes both off.
+
+    Converting the actuators here, rather than writing position targets to
+    ``ctrl``, keeps the controller byte-for-byte identical across the two
+    backends, which is the property the rest of this file is built around.
+    """
+    m.actuator_gaintype[:] = mujoco.mjtGain.mjGAIN_FIXED
+    m.actuator_gainprm[:] = 0.0
+    m.actuator_gainprm[:, 0] = 1.0
+    m.actuator_biastype[:] = mujoco.mjtBias.mjBIAS_NONE
+    m.actuator_biasprm[:] = 0.0
+    m.actuator_ctrllimited[:] = 1
+    m.actuator_ctrlrange[:] = np.stack([-GO2_TORQUE_LIMITS, GO2_TORQUE_LIMITS], axis=1)
+    m.actuator_forcelimited[:] = 0
 
 # Observation scales, identical to the CPU environment so a policy trained here
 # can be evaluated there.
@@ -140,6 +180,9 @@ class Go2MJXEnv:
         obs_noise_scale: float = 0.0,
     ):
         self.mj_model = mujoco.MjModel.from_xml_path(resolve_asset_path(xml_path))
+        # Before put_model, so the device copy and every quantity derived from
+        # the actuators below (torque_limits in particular) see torque motors.
+        make_torque_actuators(self.mj_model)
         # Named `sys` because brax's DomainRandomizationVmapWrapper swaps it
         # per batch element (env.unwrapped.sys = ...). `model` stays as a
         # readable alias.

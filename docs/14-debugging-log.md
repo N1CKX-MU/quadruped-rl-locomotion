@@ -1,8 +1,8 @@
 # 14. The debugging log
 
-Twenty defects, with the reasoning that found each one and the evidence that
-confirmed it. Sixteen were in the v1 environment and training script; the last
-four (B17-B20) were found in v2 and are included because they were found the
+Twenty-two defects, with the reasoning that found each one and the evidence
+that confirmed it. Sixteen were in the v1 environment and training script; the
+last six (B17-B22) were found in v2 and are included because they were found the
 same way and illustrate the method better than anything else here.
 
 This is the most useful chapter in the book, for a reason that is worth stating
@@ -888,6 +888,157 @@ performance.
 
 ---
 
+## B21 — The robot spawned through the floor, in both backends (found in v2)
+
+Adding the robustness features to the MJX backend produced NaN losses in brax
+training. Three rounds of isolation — friction randomisation only, mass only,
+both — all showed NaN, which pointed squarely at domain randomisation.
+
+It was not domain randomisation. The control experiment that should have come
+first: 128 environments with **every feature off**. Still NaN, in one
+environment of the 128, within 2–6 steps of reset. Every smoke test until then
+had used 4–16 environments and passed by luck.
+
+### The evidence
+
+The `home` keyframe height *is* the standing height. So any downward
+perturbation at reset — the height noise, or a joint-angle perturbation that
+extends a leg — pushes a foot below the floor. Counting reset states with a
+foot below $z = 0$:
+
+| backend | penetrating resets | deepest |
+|---|---|---|
+| MJX | 59 of 128 | 3.9 cm |
+| CPU | **144 of 200** | 6.6 cm |
+
+MJX's solver runs one iteration per step against MuJoCo's hundred, and it
+diverged to NaN outright. The CPU solver absorbed the penetration and raised
+nothing. It simply began 72% of every episode with a large spurious contact
+impulse — and this had been true of every CPU training run in the repository,
+including the one whose results are in chapter 15.
+
+### The fix
+
+After posing the robot at reset, measure the lowest foot and lift the base
+until it clears the ground by 2 mm. Two forward-kinematics calls per reset.
+
+| | after the fix |
+|---|---|
+| CPU | 0 of 200 resets penetrate; spawn height 0.282–0.327 m |
+| MJX | 128 environments × 300 steps, all finite, every feature on |
+
+### Lesson
+
+**Batch size is a test parameter.** A bug that hits one environment in 128 is
+invisible at 16. The regression test (`tests/test_mjx.py`) uses 128
+environments on purpose and says so in its docstring.
+
+And **run the everything-off control first.** Three rounds spent isolating
+features that were never the cause would have been one round.
+
+---
+
+## B22 — The GPU robot's actuators were position servos (found in v2)
+
+**Severity: every GPU training run before this was invalid.**
+
+The first real GPU smoke run went NaN at 491k steps, but the more telling
+number came earlier. Brax's first evaluation runs a freshly initialised network
+deterministically, so its actions are close to zero — a robot that should just
+stand. Those episodes lasted **27 steps**, about half a second. And the episode
+length *fell* as training went on: 27, 22, 17.
+
+### The evidence
+
+Driving the MJX environment directly with zero action, 256 environments, no
+brax wrappers in the way:
+
+| step | base height | feet in contact | environments dead |
+|---|---|---|---|
+| 1 | 0.303 m | 2.5 of 4 | 0 |
+| 11 | **0.388 m** | **0.1 of 4** | 0 |
+| 28 | 0.301 m | 2.2 of 4 | 102 |
+| 41 | 0.275 m | 1.9 of 4 | 194 |
+
+Under zero action, the robot jumped: 9 cm into the air with almost no feet on
+the ground, then landed on its trunk. The table was the same with domain
+randomisation and pushes off, and nothing went NaN — so the physics was
+stable, and it was doing what it was told. It was being told the wrong thing.
+
+Menagerie ships two Go2 models, and their actuators differ:
+
+| | `scene.xml` (CPU) | `scene_mjx.xml` (GPU) |
+|---|---|---|
+| actuator | `motor` | `position` |
+| `ctrl` means | torque, N·m | joint-angle target, rad |
+| calf `ctrlrange` | ±45.43 | [−2.623, −0.848] |
+| internal PD | none | kp = 50, kd = 0.5 |
+
+The MJX environment computes a PD torque, exactly as the CPU environment does,
+and writes it to `ctrl`. On the servo model that number is read as an angle,
+clamped to the joint's range, and chased by a second PD the code does not know
+exists. At zero action the torque is about zero, so every joint is driven to
+roughly 0 rad. For the calf that clamps to −0.848, against a standing angle of
+−1.8. All four legs straighten at once, and the robot launches.
+
+It corrupted the torque clamp as well. `torque_limits` was read from
+`ctrlrange`, which on this model is a joint range — so the calf's "torque limit"
+was −0.848.
+
+### Why nothing caught it
+
+This chapter's own "not bugs" section, below, records that writing torques into
+`data.ctrl` was correct *because the Go2 uses motor actuators*, and warns that
+on a position-servo model it would be a bug. That check was right, and it was
+done on `scene.xml`. The GPU backend loads a different file, and nobody asked
+the same question of it.
+
+The tests missed it for a structural reason. `tests/test_mjx.py` asserts that
+the two backends compute the **same reward from the same state**. That is a
+claim about the objective. It says nothing about whether the same action
+produces the same *state*, and that is where this bug lived. The one dynamic
+check ran three steps and accepted any height between 0.1 and 0.6 m — which a
+robot in mid-launch passes.
+
+### The fix
+
+Convert the MJX model's actuators to torque motors at load time, with the CPU
+model's per-joint limits (`make_torque_actuators` in `mjx/mjx_env.py`). The
+alternative — writing position targets to `ctrl` and tuning the built-in servo
+to match — would have given the two backends two different controllers. This
+way the PD law is identical, line for line, in both.
+
+Zero action, 256 environments, 150 steps, on the GPU:
+
+| | before | after |
+|---|---|---|
+| environments terminated | 239 of 256 | **0** |
+| feet in contact | 1.6 of 4 | **4.0 of 4** |
+| settled base height | fell to 0.21 m | **0.252 m** |
+| reward per step | −0.100 | **+0.032** |
+
+The settled height is the independent confirmation. Chapter 15 measures the CPU
+environment standing at the same gains ($k_p = 55$) at **0.254 m**. The two
+backends now agree on the dynamics, not only on the reward.
+
+Two regression tests, both confirmed to fail with the fix reverted: one asserts
+the MJX actuators are torque motors with the CPU model's limits, in the same
+order; the other drives zero action for a full second and bounds the height
+tightly enough that a launch cannot pass.
+
+### Lesson
+
+**Parity tests must cover dynamics, not just the objective.** Sharing
+`envs/rewards.py` between backends guaranteed they optimise the same function.
+It guaranteed nothing about the inputs to that function. The cheapest dynamic
+parity check there is — does zero action produce a standing robot in both? —
+would have caught this on the day the MJX backend was written.
+
+And **a check is only as good as the file it was run on.** The right question
+had already been asked and answered in this chapter, about a different model.
+
+---
+
 ## Things that were checked and were *not* bugs
 
 Recording these matters as much as recording the bugs. A debugging log that only
@@ -900,7 +1051,9 @@ that it was never applied to velocities, not that it was wrong.
 **Writing torques into `data.ctrl` was correct.** The Menagerie Go2 uses `motor`
 actuators with `ctrlrange` in newton-metres, so the units line up. This looks
 like a bug — many MJCF models use position servos, where it would be one — and
-is not.
+is not. (It *was* one in the MJX backend, which loads `scene_mjx.xml` — a
+position-servo model. That is B22, above: the right check, run on the wrong
+file.)
 
 **Timeout bootstrapping was handled.** Chapter 4, §4.7 describes how treating
 truncation as termination biases the critic. SB3's vectorised wrappers set
@@ -938,6 +1091,8 @@ were wrong.
 | B18 | Stepping reward was piecewise constant (v2) | **No gradient toward stepping** |
 | B19 | Stride reward made a correct trot score worse than standing (v2) | **Target behaviour was penalised** |
 | B20 | Command envelope asked for unreachable speeds (v2) | Tracking reward saturated; command ignored |
+| B21 | Reset noise buried a foot in the floor (v2) | Spurious impulse on CPU; NaN on GPU |
+| B22 | MJX model's actuators were position servos, fed torques (v2) | **Every GPU run invalid** |
 
 The through-line: **not one of these announced itself.** Every one had to be
 found by asking what would have to be true for the code to be right, and then

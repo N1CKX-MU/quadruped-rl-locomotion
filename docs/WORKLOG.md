@@ -14,16 +14,16 @@ without reading either.
 
 ## Status at a glance
 
-*Last updated: 2026-08-31*
+*Last updated: 2026-09-11*
 
 | | |
 |---|---|
-| Branch | `v2`, 6 commits ahead of `master`, **not pushed** |
-| Tests | 72, all passing (`make test`) |
-| Trained policy | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl` |
+| Branch | `master`, pushed |
+| Tests | 79 (78 run on CPU, 1 needs a GPU), all passing (`make test`) |
+| Trained policy | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl` (CPU, trained before the B21 fix) |
 | Training run | 18.76M steps, 16 envs, seed 0, ~8 h at ~600 steps/s |
 | CPU training | works |
-| GPU training | **working** — 6,579 env-steps/s at 2048 envs, 10.7x the CPU path |
+| GPU training | **works since B22** — 2M-step smoke run learns cleanly; no GPU policy evaluated yet |
 
 **What the policy does.** Tracks velocity commands to 0.021 m/s (forward),
 0.028 m/s (lateral) and 0.035 rad/s (yaw) over 30 random commands from the
@@ -59,6 +59,47 @@ hold.
 ---
 
 ## Log
+
+### 2026-09-11 — B22: the GPU robot was never being controlled
+
+The first real GPU smoke run went NaN at 491k steps. The earlier signal was
+better: brax's step-0 eval runs a near-zero-action policy, and those episodes
+lasted 27 steps and got *shorter* with training.
+
+Driving `Go2MJXEnv` directly at zero action (256 envs, no brax wrappers) showed
+the robot jumping 9 cm off the floor by step 11 and 239 of 256 environments
+dead by step 30 — identically with randomisation and pushes on or off, and with
+no NaN in the physics. Cause: Menagerie's `scene_mjx.xml` uses *position*
+actuators (ctrl is a joint angle), `scene.xml` uses *motors* (ctrl is a torque),
+and the env writes torques. Every calf was driven to its straight-leg limit.
+Full write-up in [chapter 14, B22](14-debugging-log.md); B21 is written up there
+now too.
+
+Fix: `make_torque_actuators()` converts the MJX actuators to motors with the CPU
+model's limits, so the PD law stays identical across backends. After it, zero
+action gives 0 of 256 terminated, 4.00 of 4 feet down, and a settled height of
+0.252 m against the CPU's 0.254 m. Two regression tests, both confirmed to fail
+with the fix reverted.
+
+2M-step smoke run after the fix (2048 envs, seed 0, all robustness features on):
+
+| step | eval reward | episode length |
+|---|---|---|
+| 0 | 20.47 | 1000 |
+| 0.98M | 35.56 | 1000 |
+| 2.21M | 56.22 | 1000 |
+
+Monotonic at every one of ten evals, full-length episodes throughout, no NaN.
+About 30 minutes wall-clock, of which roughly 10 was XLA compiling the eval
+loop (it prints a "very slow compile" warning; that is normal here). Saved as
+`models/go2_mjx_smoke2m.pkl`.
+
+This proves the pipeline learns. It does not prove the robot walks: there is no
+way yet to run a brax policy in the CPU environment (open item 1).
+
+Two earlier smoke attempts that day died as clean VM shutdowns with no error.
+That was WSL being migrated to a new drive mid-run, not the code — noted so
+nobody chases it.
 
 ### 2026-08-31 — GPU training path (in progress)
 
@@ -145,17 +186,21 @@ from-scratch PPO, the MJX backend, 67 tests, and the 17-chapter book.
 
 Ordered by what I would do next.
 
-1. **Train on the GPU.** The backend is installed, measured and decoupled;
-   nothing has been trained with it yet. Before trusting a GPU-trained policy,
-   add the four things `mjx/mjx_env.py` says it lacks: domain randomisation,
-   pushes, observation noise, and an episode limit. Without them the GPU env
-   poses an easier problem than the CPU one.
+1. **Evaluate a GPU policy on the CPU environment.** Nothing can do this yet:
+   `scripts/evaluate.py` and `scripts/play.py` load SB3 checkpoints only. Needs
+   a loader for brax params (`models/go2_mjx_*.pkl`) that rebuilds the policy
+   network and applies brax's observation normaliser, then drives `Go2Env`.
+   Until it exists, a GPU run's reward curve says the pipeline learns, not that
+   the robot walks - and MJX's simplified collision model means the CPU
+   environment is the one whose verdict counts.
+1b. **Full GPU run**, then evaluate it as above. Replaces the B21 caveat in the
+   README with a clean result.
 2. **Multi-gait.** The mechanism exists and is unused. Swap the observation's
    2-number global clock for the 8-number per-foot clock (`clock_signal` in
    `envs/gait.py`), bump `obs_dim`, mirror in `mjx/mjx_env.py`, widen `gaits` in
    the config, update the test asserting 50 dims. Then retrain. This is the last
    capability gap the README admits to.
-3. **Push the branch.** Six commits exist only on this machine.
+3. ~~Push the branch.~~ Done.
 4. **From-scratch PPO parity run.** `ppo_from_scratch/` has never been run
    against SB3 on a matched seed. That comparison is the payoff for writing it.
 5. **Rough terrain.** `scripts/generate_terrain.py` and

@@ -234,3 +234,64 @@ def test_mjx_env_resets_steps_and_vmaps():
     # Every configured non-zero term must be reported, same as the CPU env.
     expected = {k for k, w in env.weights.items() if w != 0.0}
     assert set(terms) == expected
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+def test_mjx_actuators_are_torque_motors_matching_the_cpu_model():
+    """B22. The MJX Go2 ships position servos; this environment writes torques.
+
+    Menagerie's scene_mjx.xml uses `position` actuators (ctrl is a joint-angle
+    target in radians, tracked by a built-in PD), while scene.xml uses `motor`
+    actuators (ctrl is a torque). The environment computes a PD torque and
+    writes it to ctrl, so on the unmodified MJX model a zero action drives every
+    calf to its joint limit and the robot launches itself off the floor. The
+    reward-parity tests could not see this: they compare the objective, not the
+    dynamics that feed it.
+    """
+    import mujoco
+
+    pytest.importorskip("mujoco.mjx")
+    from mjx.mjx_env import Go2MJXEnv
+
+    cpu = mujoco.MjModel.from_xml_path("mujoco_menagerie/unitree_go2/scene.xml")
+    m = Go2MJXEnv().mj_model
+
+    assert np.all(m.actuator_gaintype == mujoco.mjtGain.mjGAIN_FIXED)
+    assert np.allclose(m.actuator_gainprm[:, 0], 1.0)
+    assert np.allclose(m.actuator_gainprm[:, 1:], 0.0)
+    assert np.all(m.actuator_biastype == mujoco.mjtBias.mjBIAS_NONE)
+    assert np.allclose(m.actuator_biasprm, 0.0)
+    # Same torque limits, in the same actuator order, as the CPU model.
+    assert np.allclose(m.actuator_ctrlrange, cpu.actuator_ctrlrange), (
+        m.actuator_ctrlrange, cpu.actuator_ctrlrange)
+    assert np.array_equal(m.actuator_trnid, cpu.actuator_trnid)
+
+
+@pytest.mark.skipif(not os.path.exists(XML), reason="mujoco_menagerie not present")
+def test_mjx_robot_stands_under_zero_action():
+    """B22, behaviourally: a zero action must hold the home pose, not jump.
+
+    Before the fix, base height went 0.30 -> 0.39 m by step 11 with the feet
+    off the ground, and 90% of environments were dead by step 30. The older
+    3-step height check (0.1 < h < 0.6) passed straight through that, which is
+    why this test runs for a full second and bounds the height tightly.
+    """
+    pytest.importorskip("mujoco.mjx")
+    from mjx.mjx_env import Go2MJXEnv
+
+    env = Go2MJXEnv(randomize_dynamics=False, push_enabled=False)
+    n = 4
+    reset = jax.jit(jax.vmap(env.reset))
+    step = jax.jit(jax.vmap(env.step))
+    state = reset(jax.random.split(jax.random.PRNGKey(3), n))
+
+    action = jnp.zeros((n, env.action_size))
+    max_h = 0.0
+    for _ in range(50):                      # 1 s at 50 Hz
+        state, _ = step(state, action)
+        assert not np.any(np.asarray(state["done"])), "terminated under zero action"
+        max_h = max(max_h, float(np.max(np.asarray(state["data"].qpos[:, 2]))))
+
+    h = np.asarray(state["data"].qpos[:, 2])
+    assert max_h < 0.34, "robot left the ground: peak base height %.3f m" % max_h
+    assert np.all((h > 0.22) & (h < 0.32)), h

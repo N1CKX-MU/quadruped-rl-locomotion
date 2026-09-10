@@ -37,7 +37,7 @@ make play           # drive it yourself: WASD, Q/E, 1-5 for gaits
 v1 trained a policy that walked forwards at 0.74 m/s and could do nothing else.
 That was not a tuning limit. It was the sum of sixteen specific defects, none of
 which produced an error message, all of which survived five documented training
-runs. Five more (B17-B21) were found in v2 and are listed alongside them.
+runs. Six more (B17-B22) were found in v2 and are listed alongside them.
 
 The headline one:
 
@@ -75,6 +75,7 @@ The full list is [`docs/14-debugging-log.md`](docs/14-debugging-log.md). Summary
 | B19 | Stride reward made a correct trot score worse than standing still (v2) | Target behaviour was penalised |
 | B20 | Command envelope asked for speeds the leg geometry cannot reach (v2) | Tracking reward saturated |
 | B21 | Reset noise buried a foot in the floor in 72% of CPU resets and 46% of MJX resets (v2) | Spurious impulse on CPU; **NaN on GPU** |
+| B22 | The MJX model's actuators were position servos, and the env fed them torques (v2) | Robot launched itself at zero action; **every GPU run invalid** |
 
 Four things were checked and found **not** to be bugs — the quaternion helper,
 the torque units, the timeout bootstrapping, and the PD gains. Those are
@@ -94,7 +95,7 @@ misrepresents how the work goes.
 | Curriculum | open-loop ramp of one scalar | closed-loop over the full command envelope |
 | Control rate | 25 Hz | 50 Hz, with the PD loop at 500 Hz |
 | Reward | 8 terms, inline, unlogged | 17 terms, separate functions, each logged |
-| Tests | none | 77 |
+| Tests | none | 79 |
 | GPU training | — | MJX backend with domain randomisation, pushes, observation noise and truncation |
 
 ---
@@ -149,7 +150,7 @@ teaches more than re-reading the paper.
 
 ```bash
 make check                    # sanity-check the environment before training
-make test                     # 77 unit tests
+make test                     # 79 unit tests
 make train                    # SB3 PPO
 make train-scratch            # the from-scratch implementation
 make resume CKPT=models/checkpoints/go2_ppo_2000000_steps.zip
@@ -287,8 +288,15 @@ pre-fix result.
 feature: actuator-gain, friction and link-mass randomisation, randomly timed
 pushes, observation noise, and episode truncation reported separately from
 termination. With every feature on, 128 environments × 300 steps stay finite.
-No GPU-trained policy has been evaluated yet, so there are no GPU policy
-numbers here — only the throughput figures above.
+
+It now matches the CPU *dynamics* too, which it did not until B22. Menagerie's
+MJX Go2 model uses position servos where the CPU model uses torque motors, and
+the environment was writing torques into a joint-angle input — so under zero
+action the robot threw itself off the ground. Every GPU run before the fix was
+training on that. After it, zero action settles at 0.252 m on the GPU against
+0.254 m on the CPU, with 0 of 256 environments falling. No GPU-trained policy
+has been evaluated yet, so there are no GPU policy numbers here — only the
+throughput figures above.
 
 Full tables in [`docs/15-results.md`](docs/15-results.md).
 
@@ -315,7 +323,7 @@ scripts/
   play.py           keyboard teleop
   evaluate.py       command-grid evaluation
   gait_analysis.py  gait diagrams and duty/phase measurement
-tests/              77 tests: maths, gait schedule, reward terms, env, MJX parity
+tests/              79 tests: maths, gait schedule, reward terms, env, MJX parity
 docs/               the book (17 chapters)
 configs/            YAML: reward weights, command ranges, PPO hyperparameters
 ```

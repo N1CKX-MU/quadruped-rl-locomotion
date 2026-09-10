@@ -166,7 +166,7 @@ promotion threshold of 0.85. A statue scored 0.79.
 
 ### Test suite
 
-69 tests, all passing: quaternion transforms against MuJoCo's own
+79 tests, all passing: quaternion transforms against MuJoCo's own
 `mju_rotVecQuat`, the Euler convention, gait-schedule periodicity and duty
 factors, every reward term's sign and bounds, observation shape and finiteness,
 command conditioning, contact detection, and Gymnasium API compliance via SB3's
