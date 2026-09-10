@@ -2,9 +2,11 @@
 
 Command-conditioned locomotion for the Unitree Go2 in MuJoCo, trained with PPO.
 The robot walks forwards, backwards and sideways, turns on the spot, holds a
-commanded body height, and trots at a commandable step frequency — tracking
-velocity commands to **0.02 m/s** and yaw rate to **0.035 rad/s**, with a
-**100% survival rate** and a measured duty factor of exactly 0.500.
+commanded body height, and trots at a commandable step frequency. It reaches
+**0.94 m/s** forward, 0.83 m/s backward, 0.49 m/s sideways and turns at
+**1.5 rad/s**. Within its trained range it holds the commanded velocity with a
+mean error under **0.03 m/s** (0.035 rad/s in yaw), a **100% survival rate**,
+and a measured duty factor of exactly 0.500.
 
 ![The trained policy tracking a sequence of velocity commands](assets/go2_walking.gif)
 
