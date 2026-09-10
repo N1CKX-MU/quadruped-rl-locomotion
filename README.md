@@ -6,6 +6,8 @@ commanded body height, and trots at a commandable step frequency — tracking
 velocity commands to **0.02 m/s** and yaw rate to **0.035 rad/s**, with a
 **100% survival rate** and a measured duty factor of exactly 0.500.
 
+![The trained policy tracking a sequence of velocity commands](assets/go2_walking.gif)
+
 The gait is a *phase schedule* the reward compares foot contacts against, so
 trot, pace, bound and walk are all expressible. The shipped checkpoint is
 trained on trot only — see [Results](#results) for what it does and does not
@@ -33,7 +35,7 @@ make play           # drive it yourself: WASD, Q/E, 1-5 for gaits
 v1 trained a policy that walked forwards at 0.74 m/s and could do nothing else.
 That was not a tuning limit. It was the sum of sixteen specific defects, none of
 which produced an error message, all of which survived five documented training
-runs. Four more (B17-B20) were found in v2 and are listed alongside them.
+runs. Five more (B17-B21) were found in v2 and are listed alongside them.
 
 The headline one:
 
@@ -70,6 +72,7 @@ The full list is [`docs/14-debugging-log.md`](docs/14-debugging-log.md). Summary
 | B18 | Stepping reward was piecewise constant, so its gradient was zero (v2) | No gradient toward stepping |
 | B19 | Stride reward made a correct trot score worse than standing still (v2) | Target behaviour was penalised |
 | B20 | Command envelope asked for speeds the leg geometry cannot reach (v2) | Tracking reward saturated |
+| B21 | Reset noise buried a foot in the floor in 72% of CPU resets and 46% of MJX resets (v2) | Spurious impulse on CPU; **NaN on GPU** |
 
 Four things were checked and found **not** to be bugs — the quaternion helper,
 the torque units, the timeout bootstrapping, and the PD gains. Those are
@@ -89,7 +92,8 @@ misrepresents how the work goes.
 | Curriculum | open-loop ramp of one scalar | closed-loop over the full command envelope |
 | Control rate | 25 Hz | 50 Hz, with the PD loop at 500 Hz |
 | Reward | 8 terms, inline, unlogged | 17 terms, separate functions, each logged |
-| Tests | none | 67 |
+| Tests | none | 77 |
+| GPU training | — | MJX backend with domain randomisation, pushes, observation noise and truncation |
 
 ---
 
@@ -143,7 +147,7 @@ teaches more than re-reading the paper.
 
 ```bash
 make check                    # sanity-check the environment before training
-make test                     # 67 unit tests
+make test                     # 77 unit tests
 make train                    # SB3 PPO
 make train-scratch            # the from-scratch implementation
 make resume CKPT=models/checkpoints/go2_ppo_2000000_steps.zip
@@ -247,14 +251,42 @@ environments fit in 441 MB of 3221) and that throughput is *not* monotonic —
 Yaw tracking is essentially exact (commanded 1.50 rad/s, achieved 1.508).
 Combined commands work: $(0.80, 0, 0.80)$ gives $(0.795, -0.023, 0.765)$.
 
+**The gait, measured.** Top panel is the schedule the reward asks for; bottom
+panel is what the feet actually did (`make gait-analysis`, 0.7 m/s):
+
+![Trot: commanded schedule versus measured foot contacts](assets/gait_trot.png)
+
+Diagonal pairs (FL+RR, FR+RL) alternate at exactly the commanded 2.00 Hz, with
+phase offsets within 0.02 of the reference.
+
 **What it does not do**, stated plainly: it does **not** change gait on command.
-Asked for a pace or a bound it trots anyway, at 50% schedule match, which is
-chance. That is expected and predicted — the config ships `gaits: ["trot"]`, so
+Asked for a pace, it trots anyway:
+
+![Pace commanded, trot delivered](assets/gait_pace.png)
+
+The schedule pairs the left legs and the right legs; the measured contacts
+still pair the diagonals. Schedule match is 50%, which is chance. That is expected and predicted — the config ships `gaits: ["trot"]`, so
 the phase offsets were constant during training and the gait identity is not in
 the observation. Training a multi-gait policy needs the per-foot clock
 (`clock_signal` in `envs/gait.py`) and a wider `gaits` list; see
 [`docs/11`](docs/11-gaits-and-phase.md) §11.8. It is also not sim-to-real ready
 ([`docs/16`](docs/16-sim-to-real.md)).
+
+**A caveat on these numbers (B21).** This checkpoint was trained and evaluated
+*before* B21 was found. Reset noise was pushing a foot below the floor in 72% of
+CPU resets, so most training episodes began with a large spurious contact
+impulse. MuJoCo's CPU solver absorbed it silently; MJX's diverged to NaN, which
+is how it was caught. The fix lifts the base until the lowest foot clears the
+ground by 2 mm, and after it 0 of 200 CPU resets penetrate. The policy has not
+yet been retrained on the fixed environment, so the table above is the
+pre-fix result.
+
+**GPU status.** The MJX backend now matches the CPU environment feature for
+feature: actuator-gain, friction and link-mass randomisation, randomly timed
+pushes, observation noise, and episode truncation reported separately from
+termination. With every feature on, 128 environments × 300 steps stay finite.
+No GPU-trained policy has been evaluated yet, so there are no GPU policy
+numbers here — only the throughput figures above.
 
 Full tables in [`docs/15-results.md`](docs/15-results.md).
 
@@ -266,7 +298,7 @@ Full tables in [`docs/15-results.md`](docs/15-results.md).
 envs/
   go2_env.py        the environment (v2)
   go2_env_v1.py     the original, frozen verbatim for comparison and ablation
-  rewards.py        16 reward terms, one pure function each
+  rewards.py        17 reward terms, one pure function each
   gait.py           phase clock and gait definitions
   commands.py       command sampling and the adaptive curriculum
 callbacks/
@@ -281,7 +313,7 @@ scripts/
   play.py           keyboard teleop
   evaluate.py       command-grid evaluation
   gait_analysis.py  gait diagrams and duty/phase measurement
-tests/              67 tests: maths, gait schedule, reward terms, env, MJX parity
+tests/              77 tests: maths, gait schedule, reward terms, env, MJX parity
 docs/               the book (17 chapters)
 configs/            YAML: reward weights, command ranges, PPO hyperparameters
 ```
