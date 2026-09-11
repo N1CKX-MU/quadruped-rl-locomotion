@@ -29,6 +29,16 @@ from envs.go2_env import Go2Env  # noqa: E402
 
 def load_policy(model_path, vecnormalize_path, device="cpu"):
     """Load a policy plus the observation normalisation it was trained with."""
+    if model_path.endswith(".npz"):
+        # A GPU-trained (brax) policy, exported by mjx/export_policy.py. It
+        # carries its own observation normaliser, so vecnormalize is unused.
+        from envs.brax_policy import BraxPolicy
+
+        policy = BraxPolicy.load(model_path)
+        print("Loaded brax policy from %s  (%s)" % (
+            model_path, ", ".join("%s=%s" % kv for kv in sorted(policy.meta.items()))
+            or "no metadata"))
+        return policy
     from stable_baselines3 import PPO, SAC, TD3
 
     algo = PPO
@@ -171,7 +181,9 @@ def run_grid(env, predict, args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--model", default="models/go2_ppo_final.zip")
+    p.add_argument("--model", default="models/go2_ppo_final.zip",
+                   help="SB3 .zip, or a brax policy exported to .npz by "
+                        "mjx/export_policy.py")
     p.add_argument("--vec-normalize", default=None)
     p.add_argument("--xml", default="mujoco_menagerie/unitree_go2/scene.xml")
     p.add_argument("--episodes", type=int, default=20,

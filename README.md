@@ -95,7 +95,7 @@ misrepresents how the work goes.
 | Curriculum | open-loop ramp of one scalar | closed-loop over the full command envelope |
 | Control rate | 25 Hz | 50 Hz, with the PD loop at 500 Hz |
 | Reward | 8 terms, inline, unlogged | 17 terms, separate functions, each logged |
-| Tests | none | 79 |
+| Tests | none | 83 |
 | GPU training | — | MJX backend with domain randomisation, pushes, observation noise and truncation |
 
 ---
@@ -150,7 +150,7 @@ teaches more than re-reading the paper.
 
 ```bash
 make check                    # sanity-check the environment before training
-make test                     # 79 unit tests
+make test                     # 83 unit tests
 make train                    # SB3 PPO
 make train-scratch            # the from-scratch implementation
 make resume CKPT=models/checkpoints/go2_ppo_2000000_steps.zip
@@ -294,9 +294,37 @@ MJX Go2 model uses position servos where the CPU model uses torque motors, and
 the environment was writing torques into a joint-angle input — so under zero
 action the robot threw itself off the ground. Every GPU run before the fix was
 training on that. After it, zero action settles at 0.252 m on the GPU against
-0.254 m on the CPU, with 0 of 256 environments falling. No GPU-trained policy
-has been evaluated yet, so there are no GPU policy numbers here — only the
-throughput figures above.
+0.254 m on the CPU, with 0 of 256 environments falling.
+
+**First GPU-trained policy, judged on the CPU simulator.** A 2M-step smoke run
+(2048 environments, ~30 minutes including ~10 of XLA compilation), exported to
+NumPy and evaluated in the full-fidelity CPU environment it never trained in —
+10 random commands from the trained envelope:
+
+| | GPU, 2M steps | CPU, 18.8M steps |
+|---|---|---|
+| mean $v_x$ / $v_y$ error | 0.072 / 0.082 m/s | 0.021 / 0.028 m/s |
+| mean yaw-rate error | 0.199 rad/s | 0.035 rad/s |
+| survival | 100% | 100% |
+| feet in contact | 2.36 / 4 | 2.00 / 4 |
+
+A tenth of the training and correspondingly looser, but it survives every
+command and tracks all three axes in a simulator with different collision
+geometry from the one it learned in. It is a smoke test, not a result: the full
+GPU run is next.
+
+```bash
+# on the GPU machine; writes models/go2_mjx_params.pkl AND .npz
+python -m mjx.train_mjx --timesteps 20000000
+# anywhere - numpy only, no brax or JAX needed
+python scripts/evaluate.py --model models/go2_mjx_params.npz --grid
+python scripts/play.py     --model models/go2_mjx_params.npz
+```
+
+The NumPy forward pass (`envs/brax_policy.py`) re-derives brax's deterministic
+inference by hand, so a test checks it against brax itself — and was confirmed
+to catch a wrong activation, a skipped observation normaliser, and the action
+mean and spread read in the wrong order.
 
 Full tables in [`docs/15-results.md`](docs/15-results.md).
 
@@ -311,6 +339,7 @@ envs/
   rewards.py        17 reward terms, one pure function each
   gait.py           phase clock and gait definitions
   commands.py       command sampling and the adaptive curriculum
+  brax_policy.py    runs a GPU-trained (brax) policy with numpy only
 callbacks/
   curriculum.py     closed-loop command curriculum
   logging.py        per-reward-term TensorBoard logging
@@ -323,7 +352,7 @@ scripts/
   play.py           keyboard teleop
   evaluate.py       command-grid evaluation
   gait_analysis.py  gait diagrams and duty/phase measurement
-tests/              79 tests: maths, gait schedule, reward terms, env, MJX parity
+tests/              83 tests: maths, gait schedule, reward terms, env, MJX and brax-policy parity
 docs/               the book (17 chapters)
 configs/            YAML: reward weights, command ranges, PPO hyperparameters
 ```

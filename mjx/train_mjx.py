@@ -49,6 +49,11 @@ from brax.envs.base import Env, State  # noqa: E402
 from envs.commands import ranges_from_config  # noqa: E402
 from mjx.mjx_env import Go2MJXEnv  # noqa: E402
 
+# Same architecture as the SB3 config, so the two are comparable. Module-level
+# because mjx/export_policy.py and tests/test_brax_policy.py rebuild it.
+POLICY_HIDDEN = (512, 256, 128)
+VALUE_HIDDEN = (512, 256, 128)
+
 
 class BraxGo2(Env):
     """Adapt Go2MJXEnv to brax's Env interface.
@@ -240,9 +245,8 @@ def main():
 
     network_factory = functools.partial(
         ppo_networks.make_ppo_networks,
-        # Same architecture as the SB3 config, so the two are comparable.
-        policy_hidden_layer_sizes=(512, 256, 128),
-        value_hidden_layer_sizes=(512, 256, 128),
+        policy_hidden_layer_sizes=POLICY_HIDDEN,
+        value_hidden_layer_sizes=VALUE_HIDDEN,
     )
 
     times = [time.perf_counter()]
@@ -296,6 +300,18 @@ def main():
 
     model.save_params(args.out, params)
     print("saved " + args.out)
+
+    # The CPU environment is where a policy is judged (MJX's collision model is
+    # simplified), and the CPU scripts do not depend on brax - so also write the
+    # policy in the NumPy format envs/brax_policy.py reads.
+    from mjx.export_policy import export
+
+    npz = os.path.splitext(args.out)[0] + ".npz"
+    export(params, npz, env.action_size, meta={
+        "source": os.path.basename(args.out), "timesteps": args.timesteps,
+        "num_envs": args.num_envs, "seed": args.seed})
+    print("exported " + npz + "  (evaluate with: python scripts/evaluate.py "
+          "--model " + npz + ")", flush=True)
 
 
 if __name__ == "__main__":

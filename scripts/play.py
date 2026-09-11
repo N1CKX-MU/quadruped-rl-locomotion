@@ -132,6 +132,16 @@ def load_policy(model_path, vecnormalize_path):
     on normalised observations, so replaying it on raw ones produces garbage.
     This is the same failure as bug B12, just at inference time.
     """
+    if model_path.endswith(".npz"):
+        # A GPU-trained (brax) policy, exported by mjx/export_policy.py. It
+        # carries its own observation normaliser, so vecnormalize is unused.
+        from envs.brax_policy import BraxPolicy
+
+        policy = BraxPolicy.load(model_path)
+        print("Loaded brax policy from %s  (%s)" % (
+            model_path, ", ".join("%s=%s" % kv for kv in sorted(policy.meta.items()))
+            or "no metadata"))
+        return policy
     import pickle
 
     from stable_baselines3 import PPO
@@ -172,7 +182,9 @@ def load_policy(model_path, vecnormalize_path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--model", default="models/go2_ppo_final.zip")
+    p.add_argument("--model", default="models/go2_ppo_final.zip",
+                   help="SB3 .zip, or a brax policy exported to .npz by "
+                        "mjx/export_policy.py")
     p.add_argument("--vecnormalize", default=None)
     p.add_argument("--xml", default="mujoco_menagerie/unitree_go2/scene.xml")
     p.add_argument("--random", action="store_true",

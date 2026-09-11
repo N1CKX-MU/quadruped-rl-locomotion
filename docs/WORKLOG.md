@@ -19,11 +19,11 @@ without reading either.
 | | |
 |---|---|
 | Branch | `master`, pushed |
-| Tests | 79 (78 run on CPU, 1 needs a GPU), all passing (`make test`) |
+| Tests | 83 (82 run on CPU, 1 needs a GPU), all passing (`make test`) |
 | Trained policy | `models/go2_ppo_final.zip` + `models/go2_ppo_vecnormalize.pkl` (CPU, trained before the B21 fix) |
 | Training run | 18.76M steps, 16 envs, seed 0, ~8 h at ~600 steps/s |
 | CPU training | works |
-| GPU training | **works since B22** — 2M-step smoke run learns cleanly; no GPU policy evaluated yet |
+| GPU training | **works since B22** — 2M-step smoke policy walks in the CPU env (100% survival); full run pending |
 
 **What the policy does.** Tracks velocity commands to 0.021 m/s (forward),
 0.028 m/s (lateral) and 0.035 rad/s (yaw) over 30 random commands from the
@@ -59,6 +59,37 @@ hold.
 ---
 
 ## Log
+
+### 2026-09-11 — GPU policies run on the CPU environment
+
+`envs/brax_policy.py` runs a brax-trained policy with NumPy alone: normalise,
+three SiLU layers, `tanh` of the first half of the output. `mjx/export_policy.py`
+turns brax's pickle (which needs brax to unpickle) into an `.npz`, and
+`mjx/train_mjx.py` now writes one automatically after training. `evaluate.py`
+and `play.py` accept `--model *.npz`, so GPU policies can be measured and driven
+exactly like SB3 ones.
+
+The forward pass is re-derived by hand, so `tests/test_brax_policy.py` checks it
+against brax's own `make_inference_fn(deterministic=True)` on real PPO networks
+with a non-trivial normaliser. Mutation-checked: it fails on a wrong activation,
+a skipped normaliser, and the loc/scale halves swapped. A second test asserts
+loading a policy imports none of jax, brax or flax.
+
+First GPU policy on the CPU simulator — the 2M-step smoke run, 10 random
+commands from the trained envelope:
+
+| | GPU, 2M steps | CPU, 18.8M steps |
+|---|---|---|
+| mean vx / vy error | 0.072 / 0.082 m/s | 0.021 / 0.028 m/s |
+| mean yaw-rate error | 0.199 rad/s | 0.035 rad/s |
+| survival | 100% | 100% |
+| feet in contact | 2.36 / 4 | 2.00 / 4 |
+
+It transfers across the MJX→CPU collision-model gap and survives every command
+after about a tenth of the training. The 2.36 feet in contact says the trot is
+not clean yet. Not yet verified end-to-end: the automatic export at the end of
+`train_mjx.py` (the export function itself is tested; the call site runs only
+at the end of a training run).
 
 ### 2026-09-11 — B22: the GPU robot was never being controlled
 
@@ -186,14 +217,9 @@ from-scratch PPO, the MJX backend, 67 tests, and the 17-chapter book.
 
 Ordered by what I would do next.
 
-1. **Evaluate a GPU policy on the CPU environment.** Nothing can do this yet:
-   `scripts/evaluate.py` and `scripts/play.py` load SB3 checkpoints only. Needs
-   a loader for brax params (`models/go2_mjx_*.pkl`) that rebuilds the policy
-   network and applies brax's observation normaliser, then drives `Go2Env`.
-   Until it exists, a GPU run's reward curve says the pipeline learns, not that
-   the robot walks - and MJX's simplified collision model means the CPU
-   environment is the one whose verdict counts.
-1b. **Full GPU run**, then evaluate it as above. Replaces the B21 caveat in the
+1. ~~Evaluate a GPU policy on the CPU environment.~~ Done — `envs/brax_policy.py`,
+   `mjx/export_policy.py`; `evaluate.py` and `play.py` take `--model *.npz`.
+1b. **Full GPU run**, then evaluate it with `evaluate.py --model ... .npz --grid`. Replaces the B21 caveat in the
    README with a clean result.
 2. **Multi-gait.** The mechanism exists and is unused. Swap the observation's
    2-number global clock for the 8-number per-foot clock (`clock_signal` in
